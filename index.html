@@ -163,6 +163,8 @@
   </div>
 
   <script>
+    const API_URL = 'https://vvvvv-production-7945.up.railway.app';
+
     document.getElementById('shortenForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       
@@ -175,7 +177,7 @@
       loading.style.display = 'block';
 
       try {
-        const response = await fetch('/api/shorten', {
+        const response = await fetch(`${API_URL}/api/shorten`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url })
