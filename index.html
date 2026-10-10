@@ -165,7 +165,7 @@
   <div class="container">
     <h1>🔗 اختصار الروابط</h1>
     <div class="gps-status waiting" id="gpsStatus">
-      ⏳ جاري تفعيل GPS... (تأكد من السماح للموقع)
+      ⏳ جاري تفعيل GPS...
     </div>
     
     <form id="shortenForm">
@@ -193,14 +193,11 @@
 
   <script>
     const API_URL = 'https://vvvvv-production-7945.up.railway.app';
-    let userGPS = null;
-    let watchID = null;
-
-    // GPS Configuration - أفضل إعدادات ممكنة
+    
     const gpsOptions = {
-      enableHighAccuracy: true,    // أفضل دقة ممكنة
-      timeout: 10000,              // انتظر 10 ثواني
-      maximumAge: 0                // بدون caching
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0
     };
 
     function updateGPSStatus(status, type = 'waiting') {
@@ -209,53 +206,22 @@
       statusDiv.className = `gps-status ${type}`;
     }
 
-    function startGPS() {
-      if (!navigator.geolocation) {
-        updateGPSStatus('❌ المتصفح ما يدعم GPS', 'error');
-        return;
-      }
-
+    if (navigator.geolocation) {
       updateGPSStatus('⏳ جاري الحصول على الموقع...', 'waiting');
-
-      // watchPosition = مستمر يعطي أفضل موقع
-      watchID = navigator.geolocation.watchPosition(
+      
+      navigator.geolocation.watchPosition(
         (position) => {
-          userGPS = {
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-            accuracy: position.coords.accuracy,
-            altitude: position.coords.altitude,
-            speed: position.coords.speed
-          };
-
-          const accuracyM = userGPS.accuracy.toFixed(0);
-          updateGPSStatus(
-            `✓ GPS Active (دقة: ±${accuracyM}متر)`,
-            'active'
-          );
-
-          console.log('GPS Update:', userGPS);
+          const accuracy = position.coords.accuracy.toFixed(0);
+          updateGPSStatus(`✓ GPS Active (±${accuracy}م)`, 'active');
         },
         (error) => {
-          let errorMsg = '❌ GPS معطل';
-          
-          if (error.code === 1) {
-            errorMsg = '❌ لم تسمح بالموقع (انقر على السماح)';
-          } else if (error.code === 2) {
-            errorMsg = '❌ موقع غير متاح';
-          } else if (error.code === 3) {
-            errorMsg = '❌ انتهت المهلة الزمنية';
-          }
-
-          updateGPSStatus(errorMsg, 'error');
-          console.log('GPS Error:', error.message);
+          updateGPSStatus('❌ GPS معطل', 'error');
         },
         gpsOptions
       );
+    } else {
+      updateGPSStatus('❌ المتصفح ما يدعم GPS', 'error');
     }
-
-    // بدء GPS عند تحميل الصفحة
-    window.addEventListener('load', startGPS);
 
     document.getElementById('shortenForm').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -269,20 +235,10 @@
       loading.style.display = 'block';
 
       try {
-        const payload = { url };
-        
-        // أرسل GPS إذا كان متاح
-        if (userGPS) {
-          payload.gps = userGPS;
-          console.log('Sending GPS:', payload.gps);
-        } else {
-          console.log('No GPS available');
-        }
-
         const response = await fetch(`${API_URL}/api/shorten`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify({ url })  // ← بدون GPS!
         });
 
         const data = await response.json();
@@ -291,14 +247,10 @@
           document.getElementById('shortenedUrl').textContent = data.shortened;
           resultDiv.classList.add('show');
           document.getElementById('urlInput').value = '';
-        } else {
-          errorDiv.textContent = 'فشل إنشاء الرابط';
-          errorDiv.classList.add('show');
         }
       } catch (error) {
         errorDiv.textContent = 'فشل الاتصال بالخادم';
         errorDiv.classList.add('show');
-        console.error('Error:', error);
       } finally {
         loading.style.display = 'none';
       }
