@@ -17,14 +17,51 @@
       min-height: 100vh;
     }
 
-    .navbar {
+    .header {
       background: #1a1a2e;
       padding: 20px;
       display: flex;
-      gap: 20px;
-      justify-content: center;
+      justify-content: space-between;
+      align-items: center;
       box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-      flex-wrap: wrap;
+    }
+
+    .logo {
+      color: white;
+      font-size: 24px;
+      font-weight: bold;
+    }
+
+    .hamburger {
+      display: none;
+      flex-direction: column;
+      cursor: pointer;
+      gap: 5px;
+    }
+
+    .hamburger span {
+      width: 25px;
+      height: 3px;
+      background: white;
+      border-radius: 2px;
+      transition: 0.3s;
+    }
+
+    .hamburger.active span:nth-child(1) {
+      transform: rotate(45deg) translate(10px, 10px);
+    }
+
+    .hamburger.active span:nth-child(2) {
+      opacity: 0;
+    }
+
+    .hamburger.active span:nth-child(3) {
+      transform: rotate(-45deg) translate(7px, -7px);
+    }
+
+    .navbar {
+      display: flex;
+      gap: 20px;
     }
 
     .nav-btn {
@@ -48,11 +85,48 @@
       transform: translateY(-2px);
     }
 
+    .menu-dropdown {
+      display: none;
+      position: absolute;
+      top: 70px;
+      right: 20px;
+      background: #1a1a2e;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      z-index: 1000;
+    }
+
+    .menu-dropdown.active {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    @media (max-width: 768px) {
+      .hamburger {
+        display: flex;
+      }
+
+      .navbar {
+        display: none;
+      }
+
+      .menu-dropdown {
+        width: calc(100% - 40px);
+        right: 20px;
+      }
+
+      .menu-dropdown.active {
+        display: flex;
+      }
+    }
+
     .container {
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: calc(100vh - 120px);
+      min-height: calc(100vh - 80px);
       padding: 20px;
     }
 
@@ -176,12 +250,37 @@
       color: #667eea;
       font-weight: bold;
     }
+
+    .keyword-inputs {
+      display: none;
+      gap: 15px;
+      flex-direction: column;
+    }
+
+    .keyword-inputs.show {
+      display: flex;
+    }
   </style>
 </head>
 <body>
-  <div class="navbar">
-    <button class="nav-btn active" onclick="switchTab('shorten')">🔗 اختصار الرابط</button>
-    <button class="nav-btn" onclick="switchTab('formatter')">📝 تغيير الصيغة</button>
+  <div class="header">
+    <div class="logo">🔗 أدوات الروابط</div>
+    
+    <div class="navbar" id="navbar">
+      <button class="nav-btn active" onclick="switchTab('shorten')">🔗 اختصار الرابط</button>
+      <button class="nav-btn" onclick="switchTab('formatter')">📝 تغيير الصيغة</button>
+    </div>
+
+    <div class="hamburger" id="hamburger" onclick="toggleMenu()">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+
+    <div class="menu-dropdown" id="menu">
+      <button class="nav-btn active" onclick="switchTab('shorten'); toggleMenu()">🔗 اختصار الرابط</button>
+      <button class="nav-btn" onclick="switchTab('formatter'); toggleMenu()">📝 تغيير الصيغة</button>
+    </div>
   </div>
 
   <div class="container">
@@ -209,3 +308,200 @@
 
     <!-- تغيير الصيغة -->
     <div id="formatter" class="content">
+      <h1>📝 تغيير صيغة الرابط</h1>
+      
+      <form id="formatterForm">
+        <div class="form-group">
+          <label for="domainSelect">اختر النطاق:</label>
+          <select id="domainSelect" onchange="updateKeywords()">
+            <option value="">اختر النطاق</option>
+            <option value="tiktok">TikTok</option>
+            <option value="youtube">YouTube</option>
+            <option value="instagram">Instagram</option>
+            <option value="twitter">Twitter</option>
+            <option value="facebook">Facebook</option>
+          </select>
+        </div>
+
+        <div class="keyword-inputs" id="keywordInputs">
+          <!-- سيتم ملؤها ديناميكياً -->
+        </div>
+
+        <button type="submit">بناء الرابط</button>
+        <div class="error" id="formatterError"></div>
+      </form>
+
+      <div class="result" id="formatterResult">
+        <div class="result-label">الرابط الجديد:</div>
+        <div class="result-link" id="formattedUrl"></div>
+        <button class="copy-btn" onclick="copyToClipboard('formattedUrl')">نسخ الرابط ✓</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = 'https://vvvvv-production-7945.up.railway.app';
+
+    const keywordConfigs = {
+      tiktok: [
+        { key: 'username', label: 'اسم المستخدم', placeholder: '@username' },
+        { key: 'videoId', label: 'معرّف الفيديو', placeholder: '7123456789' }
+      ],
+      youtube: [
+        { key: 'channel', label: 'اسم القناة أو @handle', placeholder: '@channelname' },
+        { key: 'videoId', label: 'معرّف الفيديو (ID)', placeholder: 'dQw4w9WgXcQ' }
+      ],
+      instagram: [
+        { key: 'username', label: 'اسم المستخدم', placeholder: 'username' },
+        { key: 'postId', label: 'معرّف المنشور', placeholder: 'ABC123' }
+      ],
+      twitter: [
+        { key: 'username', label: 'اسم المستخدم', placeholder: '@username' },
+        { key: 'tweetId', label: 'معرّف التغريدة', placeholder: '1234567890' }
+      ],
+      facebook: [
+        { key: 'username', label: 'اسم الصفحة', placeholder: 'pageusername' },
+        { key: 'postId', label: 'معرّف المنشور', placeholder: '123456789' }
+      ]
+    };
+
+    function toggleMenu() {
+      const hamburger = document.getElementById('hamburger');
+      const menu = document.getElementById('menu');
+      hamburger.classList.toggle('active');
+      menu.classList.toggle('active');
+    }
+
+    function switchTab(tab) {
+      document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+      document.getElementById(tab).classList.add('active');
+
+      const navbar = document.getElementById('navbar');
+      const menuDropdown = document.getElementById('menu');
+      if (navbar) {
+        document.querySelectorAll('.navbar .nav-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.navbar .nav-btn').forEach((b, i) => {
+          if ((i === 0 && tab === 'shorten') || (i === 1 && tab === 'formatter')) {
+            b.classList.add('active');
+          }
+        });
+      }
+      if (menuDropdown) {
+        document.querySelectorAll('.menu-dropdown .nav-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.menu-dropdown .nav-btn').forEach((b, i) => {
+          if ((i === 0 && tab === 'shorten') || (i === 1 && tab === 'formatter')) {
+            b.classList.add('active');
+          }
+        });
+      }
+    }
+
+    function updateKeywords() {
+      const domain = document.getElementById('domainSelect').value;
+      const keywordInputs = document.getElementById('keywordInputs');
+      
+      if (!domain) {
+        keywordInputs.classList.remove('show');
+        keywordInputs.innerHTML = '';
+        return;
+      }
+
+      const config = keywordConfigs[domain];
+      let html = '';
+
+      config.forEach(keyword => {
+        html += `
+          <div class="form-group">
+            <label for="${keyword.key}">${keyword.label}:</label>
+            <input type="text" id="${keyword.key}" placeholder="${keyword.placeholder}" required>
+          </div>
+        `;
+      });
+
+      keywordInputs.innerHTML = html;
+      keywordInputs.classList.add('show');
+    }
+
+    function copyToClipboard(elementId) {
+      const text = document.getElementById(elementId).textContent;
+      navigator.clipboard.writeText(text);
+      alert('تم النسخ ✓');
+    }
+
+    // اختصار الرابط
+    document.getElementById('shortenForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const url = document.getElementById('urlInput').value;
+      const errorDiv = document.getElementById('error');
+      const loading = document.getElementById('loading');
+      const resultDiv = document.getElementById('result');
+      
+      errorDiv.classList.remove('show');
+      loading.style.display = 'block';
+
+      try {
+        const response = await fetch(`${API_URL}/api/shorten`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+
+        const data = await response.json();
+
+        if (data.shortened) {
+          document.getElementById('shortenedUrl').textContent = data.shortened;
+          resultDiv.classList.add('show');
+          document.getElementById('urlInput').value = '';
+        }
+      } catch (error) {
+        errorDiv.textContent = 'فشل الاتصال بالخادم';
+        errorDiv.classList.add('show');
+      } finally {
+        loading.style.display = 'none';
+      }
+    });
+
+    // تغيير الصيغة
+    document.getElementById('formatterForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      
+      const domain = document.getElementById('domainSelect').value;
+      const errorDiv = document.getElementById('formatterError');
+      const resultDiv = document.getElementById('formatterResult');
+      
+      if (!domain) {
+        errorDiv.textContent = 'اختر نطاق';
+        errorDiv.classList.add('show');
+        return;
+      }
+
+      errorDiv.classList.remove('show');
+
+      try {
+        const config = keywordConfigs[domain];
+        let url = `${domain}.com/`;
+
+        config.forEach(keyword => {
+          const value = document.getElementById(keyword.key).value;
+          if (!value) throw new Error(`أدخل ${keyword.label}`);
+          
+          if (keyword.key === 'username') {
+            url += value.replace('@', '');
+          } else if (keyword.key === 'channel') {
+            url += value.replace('@', 'c/');
+          } else {
+            url += `/${value}`;
+          }
+        });
+
+        document.getElementById('formattedUrl').textContent = url;
+        resultDiv.classList.add('show');
+      } catch (error) {
+        errorDiv.textContent = error.message;
+        errorDiv.classList.add('show');
+      }
+    });
+  </script>
+</body>
+</html>
