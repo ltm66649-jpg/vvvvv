@@ -95,7 +95,6 @@
       border: 2px solid #e0e0e0;
       border-radius: 8px;
       font-size: 15px;
-      font-family: inherit;
     }
 
     input:focus,
@@ -153,8 +152,6 @@
 
     .copy-btn {
       background: #4CAF50;
-      padding: 12px;
-      width: 100%;
     }
 
     .copy-btn:hover {
@@ -178,23 +175,12 @@
       color: #667eea;
       font-weight: bold;
     }
-
-    .success {
-      color: #4CAF50;
-      text-align: center;
-      margin-top: 15px;
-      display: none;
-    }
-
-    .success.show {
-      display: block;
-    }
   </style>
 </head>
 <body>
   <div class="navbar">
-    <button class="nav-btn active" onclick="switchTab('shorten')">اختصار الرابط</button>
-    <button class="nav-btn" onclick="switchTab('formatter')">تغيير صيغة الرابط</button>
+    <button class="nav-btn active" onclick="switchTab('shorten')">🔗 اختصار الرابط</button>
+    <button class="nav-btn" onclick="switchTab('formatter')">📝 تغيير صيغة الرابط</button>
   </div>
 
   <div class="container">
@@ -226,19 +212,20 @@
       
       <form id="formatterForm">
         <div class="form-group">
-          <label for="formatterInput">أدخل الرابط:</label>
-          <input type="text" id="formatterInput" placeholder="https://example.com/path?param=value" required>
+          <label for="formatterInput">أدخل الرابط الكامل:</label>
+          <input type="text" id="formatterInput" placeholder="https://www.tiktok.com/@user/video/123456" required>
         </div>
 
         <div class="form-group">
-          <label for="formatSelect">اختر الصيغة:</label>
+          <label for="formatSelect">غيّر إلى:</label>
           <select id="formatSelect">
+            <option value="">اختر الصيغة</option>
             <option value="tiktok">TikTok</option>
             <option value="youtube">YouTube</option>
             <option value="instagram">Instagram</option>
             <option value="twitter">Twitter</option>
             <option value="facebook">Facebook</option>
-            <option value="short">Short Format</option>
+            <option value="clean">Clean URL</option>
           </select>
         </div>
 
@@ -270,28 +257,31 @@
       alert('تم النسخ ✓');
     }
 
-    // تغيير الصيغة
-    function formatURL(url, format) {
-      try {
-        const urlObj = new URL(url);
-        const hostname = urlObj.hostname;
-        const pathname = urlObj.pathname;
+    // اختصار الرابط
+    document.getElementById('shortenForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const url = document.getElementById('urlInput').value;
+      const errorDiv = document.getElementById('error');
+      const loading = document.getElementById('loading');
+      const resultDiv = document.getElementById('result');
+      
+      errorDiv.classList.remove('show');
+      loading.style.display = 'block';
 
-        switch (format) {
-          case 'tiktok':
-            return `tiktok.com${pathname}${urlObj.search}`;
-          case 'youtube':
-            return `youtube.com${pathname}${urlObj.search}`;
-          case 'instagram':
-            return `instagram.com${pathname}${urlObj.search}`;
-          case 'twitter':
-            return `twitter.com${pathname}${urlObj.search}`;
-          case 'facebook':
-            return `facebook.com${pathname}${urlObj.search}`;
-          case 'short':
-            const id = pathname.split('/').filter(p => p).slice(-1)[0] || 'link';
-            return `short.url/${id}`;
-          default:
-            return url;
+      try {
+        const response = await fetch(`${API_URL}/api/shorten`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+
+        const data = await response.json();
+
+        if (data.shortened) {
+          document.getElementById('shortenedUrl').textContent = data.shortened;
+          resultDiv.classList.add('show');
+          document.getElementById('urlInput').value = '';
+        } else {
+          throw new Error('فشل الاختصار');
         }
-      } catch
