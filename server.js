@@ -367,6 +367,24 @@ app.get('/api/test', async (req, res) => {
   res.json({ telegram: ok ? 'sent' : 'failed' });
 });
 
+// أداة تشخيص: تفتحها من أي جهاز وتشوف الـ IP اللي وصل للخادم والموقع المستخرج منه
+app.get('/api/whoami', async (req, res) => {
+  const ip = getClientIP(req);
+  const loc = await getLocation(ip);
+  res.json({
+    detectedIp: ip,
+    rawRemoteAddress: req.socket?.remoteAddress || null,
+    headers: {
+      'x-forwarded-for': req.headers['x-forwarded-for'] || null,
+      'x-real-ip': req.headers['x-real-ip'] || null,
+      'cf-connecting-ip': req.headers['cf-connecting-ip'] || null,
+      forwarded: req.headers['forwarded'] || null
+    },
+    location: loc,
+    userAgent: req.headers['user-agent'] || null
+  });
+});
+
 app.use(express.static('.'));
 
 // إعادة التوجيه المباشر للرابط الأصلي (بدون صفحة وسيطة)
