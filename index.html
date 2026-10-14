@@ -33,25 +33,25 @@
     }
 
     .hamburger {
-      display: flex;
-      flex-direction: column;
-      cursor: pointer;
-      gap: 5px;
       background: none;
       border: none;
-      padding: 0;
+      cursor: pointer;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
     }
 
     .hamburger span {
       width: 25px;
       height: 3px;
       background: white;
-      border-radius: 2px;
+      display: block;
       transition: 0.3s;
     }
 
     .hamburger.active span:nth-child(1) {
-      transform: rotate(45deg) translate(10px, 10px);
+      transform: rotate(45deg) translate(8px, 8px);
     }
 
     .hamburger.active span:nth-child(2) {
@@ -59,59 +59,48 @@
     }
 
     .hamburger.active span:nth-child(3) {
-      transform: rotate(-45deg) translate(7px, -7px);
+      transform: rotate(-45deg) translate(5px, -5px);
     }
 
-    .navbar {
-      display: flex;
-      gap: 20px;
-    }
-
-    .nav-btn {
-      background: #667eea;
-      color: white;
-      border: none;
-      padding: 12px 30px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 16px;
-      font-weight: bold;
-      transition: all 0.3s;
-    }
-
-    .nav-btn.active {
-      background: #764ba2;
-      transform: scale(1.05);
-    }
-
-    .nav-btn:hover {
-      transform: translateY(-2px);
-    }
-
-    .menu-dropdown {
-      position: fixed;
+    .menu {
+      position: absolute;
       top: 70px;
-      right: 0;
+      right: 20px;
       background: #1a1a2e;
       padding: 20px;
-      border-radius: 0 0 0 8px;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-      z-index: 1000;
+      border-radius: 8px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
       display: none;
       flex-direction: column;
       gap: 10px;
-      width: 250px;
+      z-index: 999;
     }
 
-    .menu-dropdown.active {
+    .menu.show {
       display: flex;
+    }
+
+    .menu button {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      transition: all 0.2s;
+    }
+
+    .menu button:hover {
+      background: #764ba2;
     }
 
     .container {
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: calc(100vh - 80px);
+      min-height: calc(100vh - 100px);
       padding: 20px;
     }
 
@@ -163,7 +152,7 @@
       border-color: #667eea;
     }
 
-    button:not(.hamburger) {
+    .submit-btn {
       width: 100%;
       padding: 15px;
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -173,10 +162,9 @@
       font-size: 16px;
       font-weight: 700;
       cursor: pointer;
-      transition: transform 0.2s;
     }
 
-    button:not(.hamburger):hover {
+    .submit-btn:hover {
       transform: translateY(-2px);
     }
 
@@ -233,41 +221,24 @@
       display: none;
       text-align: center;
       color: #667eea;
+      margin: 15px 0;
       font-weight: bold;
     }
 
     .keyword-inputs {
       display: none;
-      gap: 15px;
-      flex-direction: column;
     }
 
     .keyword-inputs.show {
       display: flex;
-    }
-
-    @media (max-width: 768px) {
-      .navbar {
-        display: none;
-      }
-    }
-
-    @media (min-width: 769px) {
-      .hamburger {
-        display: none;
-      }
+      flex-direction: column;
+      gap: 15px;
     }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="logo">🔗 أدوات الروابط</div>
-    
-    <div class="navbar" id="navbar">
-      <button class="nav-btn active" onclick="switchTab('shorten')">🔗 اختصار الرابط</button>
-      <button class="nav-btn" onclick="switchTab('formatter')">📝 تغيير الصيغة</button>
-    </div>
-
     <button class="hamburger" id="hamburger" onclick="toggleMenu()">
       <span></span>
       <span></span>
@@ -275,9 +246,9 @@
     </button>
   </div>
 
-  <div class="menu-dropdown" id="menu">
-    <button class="nav-btn active" onclick="switchTab('shorten'); toggleMenu()">🔗 اختصار الرابط</button>
-    <button class="nav-btn" onclick="switchTab('formatter'); toggleMenu()">📝 تغيير الصيغة</button>
+  <div class="menu" id="menu">
+    <button onclick="switchTab('shorten'); toggleMenu()">🔗 اختصار الرابط</button>
+    <button onclick="switchTab('formatter'); toggleMenu()">📝 تغيير الصيغة</button>
   </div>
 
   <div class="container">
@@ -292,14 +263,14 @@
         </div>
 
         <div class="loading" id="loading">جاري المعالجة...</div>
-        <button type="submit">اختصر الرابط</button>
+        <button class="submit-btn" type="submit">اختصر الرابط</button>
         <div class="error" id="error"></div>
       </form>
 
       <div class="result" id="result">
         <div class="result-label">الرابط المختصر:</div>
         <div class="result-link" id="shortenedUrl"></div>
-        <button class="copy-btn" onclick="copyToClipboard('shortenedUrl')">نسخ الرابط ✓</button>
+        <button class="submit-btn copy-btn" onclick="copyToClipboard('shortenedUrl')">نسخ الرابط ✓</button>
       </div>
     </div>
 
@@ -320,18 +291,16 @@
           </select>
         </div>
 
-        <div class="keyword-inputs" id="keywordInputs">
-          <!-- سيتم ملؤها ديناميكياً -->
-        </div>
+        <div class="keyword-inputs" id="keywordInputs"></div>
 
-        <button type="submit">بناء الرابط</button>
+        <button class="submit-btn" type="submit">بناء الرابط</button>
         <div class="error" id="formatterError"></div>
       </form>
 
       <div class="result" id="formatterResult">
         <div class="result-label">الرابط الجديد:</div>
         <div class="result-link" id="formattedUrl"></div>
-        <button class="copy-btn" onclick="copyToClipboard('formattedUrl')">نسخ الرابط ✓</button>
+        <button class="submit-btn copy-btn" onclick="copyToClipboard('formattedUrl')">نسخ الرابط ✓</button>
       </div>
     </div>
   </div>
@@ -345,8 +314,8 @@
         { key: 'videoId', label: 'معرّف الفيديو', placeholder: '7123456789' }
       ],
       youtube: [
-        { key: 'channel', label: 'اسم القناة أو @handle', placeholder: '@channelname' },
-        { key: 'videoId', label: 'معرّف الفيديو (ID)', placeholder: 'dQw4w9WgXcQ' }
+        { key: 'channel', label: 'اسم القناة', placeholder: '@channelname' },
+        { key: 'videoId', label: 'معرّف الفيديو', placeholder: 'dQw4w9WgXcQ' }
       ],
       instagram: [
         { key: 'username', label: 'اسم المستخدم', placeholder: 'username' },
@@ -363,18 +332,13 @@
     };
 
     function toggleMenu() {
-      const hamburger = document.getElementById('hamburger');
-      const menu = document.getElementById('menu');
-      hamburger.classList.toggle('active');
-      menu.classList.toggle('active');
+      document.getElementById('hamburger').classList.toggle('active');
+      document.getElementById('menu').classList.toggle('show');
     }
 
     function switchTab(tab) {
       document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
       document.getElementById(tab).classList.add('active');
-
-      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-      event.target.classList.add('active');
     }
 
     function updateKeywords() {
